@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local state and anything personal. Everything under profile/ is ignored
+# except the .example templates, which are the only files meant to be public.
+jobhunt.db*
+*.sqlite
+*.sqlite3
+profile/*
+!profile/*.example.md
+!profile/*.example.yaml
+Resume.pdf
+.env
+*.env.local

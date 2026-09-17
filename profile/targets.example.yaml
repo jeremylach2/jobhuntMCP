@@ -1,0 +1,60 @@
+# Which boards to watch, and what counts as relevant.
+#
+# Copy this file to targets.yaml and fill in your own companies, keywords, and
+# preferences. targets.yaml is gitignored, so your search never enters the repo.
+#
+# Verify each slug against the live ATS endpoint before adding it. If a
+# company ever moves ATS, its sync will report an error rather than silently
+# going quiet. Check `jobhunt sync` output for a failing board.
+#
+# To add a company: find its careers page, read the slug out of the URL, and put
+# it under the matching source.
+#   job-boards.greenhouse.io/SLUG   -> greenhouse
+#   jobs.lever.co/SLUG              -> lever
+#   jobs.ashbyhq.com/SLUG           -> ashby
+
+# Terms that make a posting worth a look. Used to filter the keyword-scoped
+# aggregator sources (himalayas, hn). ATS boards are pulled in full and
+# filtered at search time instead.
+keywords:
+  - backend
+  - platform
+  - distributed systems
+
+# Terms that usually mean the posting is not a fit. Applied as a soft signal by
+# the scoring heuristic, never as a hard filter, since titles lie in both directions.
+exclude_keywords:
+  - intern
+  - internship
+  - manager
+  - sales
+  - recruiter
+  - marketing
+
+# Personal constraints, surfaced to the model via get_profile so postings are
+# judged against them. Not a hard filter, per scoring.py's design rule:
+# Python never decides fit, it only prefilters. Leave a field blank/empty for
+# "no preference". Free-form text is fine anywhere, this isn't machine-parsed.
+preferences:
+  locations: []          # e.g. ["Chicago, IL", "remote"] (empty means no constraint)
+  remote: no_preference  # required | preferred | no_preference
+  min_salary: ""         # e.g. "150000"
+  company_stage: ""      # e.g. "seed to Series C", "public only"
+  notes: ""              # anything else that matters: visa sponsorship, team size, etc.
+
+companies:
+  # ---------------------------------------------------------------- greenhouse
+  greenhouse:
+    anthropic: Anthropic
+    stripe: Stripe
+
+  # --------------------------------------------------------------------- ashby
+  ashby:
+    openai: OpenAI
+    notion: Notion
+
+  # --------------------------------------------------------------------- lever
+  # Lever has thinned out among tech companies; most have migrated to Ashby.
+  # Kept wired up so a board can be added without a code change.
+  lever:
+    neon: Neon
