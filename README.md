@@ -1,6 +1,6 @@
-# jobhunt
+# jobhuntMCP
 
-[![tests](https://github.com/jeremylach2/jobhunt/actions/workflows/tests.yml/badge.svg)](https://github.com/jeremylach2/jobhunt/actions/workflows/tests.yml)
+[![tests](https://github.com/jeremylach2/jobhuntMCP/actions/workflows/tests.yml/badge.svg)](https://github.com/jeremylach2/jobhuntMCP/actions/workflows/tests.yml)
 [![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](pyproject.toml)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -15,13 +15,13 @@ thought of each one and where the application stands.
   Synced 91 boards, 412 new postings.
   Screened 8,930 unscored, 214 plausible. Top candidates:
 
-   79  [a3f9c21d] Modal - Software Engineer, Inference Platform (NYC) [remote]
-   74  [7b2e0a44] Temporal - Backend Engineer, Core ($180K – $240K)
-   71  [c0d81e93] Baseten - Software Engineer, Model Performance [remote]
+   79  [a3f9c21d] Northwind Labs - Software Engineer, Inference Platform (NYC) [remote]
+   74  [7b2e0a44] Clearwater Systems - Backend Engineer, Core ($180K – $240K)
+   71  [c0d81e93] Fathom Compute - Software Engineer, Model Performance [remote]
 ```
 
-(Shown against a target list of ~90 companies. Yours starts from a handful of
-examples in `profile/targets.example.yaml` and grows as you add boards.)
+(Companies above are fictional placeholders. Your own target list starts from a
+handful of examples in `profile/targets.example.yaml` and grows as you add boards.)
 
 ## Why it is built this way
 
@@ -35,7 +35,7 @@ So the server does not try. It splits the work:
 
 | Layer | Does | Lives in |
 |---|---|---|
-| Ingestion | Fetch and normalize postings from five sources | `sources/` |
+| Ingestion | Fetch and normalize postings from six sources | `sources/` |
 | Prefilter | Cheap keyword triage: cut ~9,000 postings to ~200 plausible ones | `scoring.py` |
 | Judgment | Read the shortlist and decide what actually fits | the model |
 | Memory | Persist assessments and pipeline state across sessions | `db.py` |
@@ -52,7 +52,7 @@ results costs a fraction of the context that reading one posting does.
 
 ## Sources
 
-All five are public, unauthenticated endpoints that employers publish for
+All six are public, unauthenticated endpoints that employers publish for
 distribution. No scraping, no browser automation, no credentials.
 
 | Source | Endpoint | Scope |
@@ -99,7 +99,7 @@ Then, in a session:
 
 ```
 > sync the boards, then shortlist what's worth reading
-> read the Modal one and tell me honestly whether it's a stretch
+> read the Northwind Labs one and tell me honestly whether it's a stretch
 > score it and mark me as applied
 > what's in my pipeline that's gone quiet for two weeks?
 ```
@@ -132,6 +132,7 @@ jobhunt stats
 | `record_fit` | Persist an assessment (score, verdict, reasons, concerns) |
 | `set_status` | Move a posting along the application pipeline |
 | `add_note` | Append a timestamped note to a posting's history |
+| `add_manual_posting` | Enter a posting by hand (for sources that can't be fetched) |
 | `list_applications` | Show the pipeline |
 | `list_targets` / `add_target` | Manage the watched company list |
 | `stats` | Summarize storage and pipeline state |
