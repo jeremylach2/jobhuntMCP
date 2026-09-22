@@ -8,18 +8,19 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
+      - uses: astral-sh/setup-uv@v3
+
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
 
+      # Same command a contributor runs locally (see AGENTS.md); one source
+      # of truth for tool versions instead of a separate pin in this file.
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: uv pip install --system -e ".[dev]"
 
       - name: Lint
         run: ruff check .

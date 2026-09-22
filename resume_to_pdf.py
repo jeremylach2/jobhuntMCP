@@ -3,6 +3,7 @@
 
 import sys
 from pathlib import Path
+
 import markdown
 from xhtml2pdf import pisa
 

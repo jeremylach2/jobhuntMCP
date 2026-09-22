@@ -72,6 +72,14 @@ reason to hammer a free public endpoint.
 
 ## Setup
 
+A fresh clone has none of your data -- `profile/` is entirely gitignored
+except the two `.example` templates, so there's no resume, no target
+companies, and no MCP registration yet. The `setup` skill (see
+`.claude/skills/setup/`) does all of the below conversationally: run it from
+a Claude Code session in this repo (`/setup` or "set up jobhunt") and it will
+install dependencies, interview you for a resume, help you verify and add
+target companies, and register the server. To do it by hand instead:
+
 ```bash
 uv venv
 uv pip install -e .
@@ -86,8 +94,7 @@ $EDITOR profile/targets.yaml
 ```
 
 No API keys or accounts are needed: every source is a public, unauthenticated
-endpoint. Everything the tool knows about you lives in `profile/`, which is
-entirely gitignored except the two `.example` templates above.
+endpoint. Everything the tool knows about you lives in `profile/`.
 
 Register the MCP server with Claude Code:
 
@@ -95,7 +102,8 @@ Register the MCP server with Claude Code:
 claude mcp add jobhunt -- /absolute/path/to/.venv/Scripts/python.exe -m jobhunt.server
 ```
 
-Then, in a session:
+Restart Claude Code after registering (or after any change to `server.py`)
+so it picks up the server. Then, in a session:
 
 ```
 > sync the boards, then shortlist what's worth reading

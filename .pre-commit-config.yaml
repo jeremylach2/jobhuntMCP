@@ -1,0 +1,21 @@
+# Mirrors the "Lint" and "Type check" steps in .github/workflows/tests.yml.
+# These run as `language: system` against the project's own venv instead of
+# pre-commit's mirrored hooks, so both CI and pre-commit always run whatever
+# ruff/mypy version `uv pip install -e ".[dev]"` resolved from pyproject.toml
+# -- one version pin to maintain, not two that can drift apart.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check
+        language: system
+        types: [python]
+
+      - id: mypy
+        name: mypy (src/jobhunt)
+        entry: mypy src/jobhunt
+        language: system
+        types: [python]
+        pass_filenames: false
+        files: ^src/jobhunt/
