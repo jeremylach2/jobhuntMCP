@@ -47,6 +47,7 @@ async def fetch_board(client: httpx.AsyncClient, slug: str, display_name: str = 
         location = categories.get("location", "") or ""
         workplace = item.get("workplaceType", "") or ""
         title = item.get("text", "")
+        description = _description(item)
         jobs.append(
             Job(
                 source=SOURCE,
@@ -55,9 +56,16 @@ async def fetch_board(client: httpx.AsyncClient, slug: str, display_name: str = 
                 title=title,
                 url=item.get("hostedUrl", "") or item.get("applyUrl", ""),
                 location=location,
-                remote=workplace.lower() == "remote" or looks_remote(location, title),
+                # An explicit non-remote workplaceType (e.g. "hybrid") is
+                # authoritative and shouldn't be overridden by a location/title
+                # guess. Only fall back to the heuristic when Lever left it blank.
+                remote=(
+                    workplace.lower() == "remote"
+                    if workplace
+                    else looks_remote(location, title, description)
+                ),
                 department=categories.get("team", "") or categories.get("department", "") or "",
-                description=_description(item),
+                description=description,
                 posted_at=str(item.get("createdAt", "")),
             )
         )

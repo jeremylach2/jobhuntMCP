@@ -15,7 +15,7 @@ import asyncio
 
 import httpx
 
-from ..models import Job, html_to_text
+from ..models import Job, has_onsite_requirement, html_to_text
 from .base import SourceResult
 
 BASE = "https://api.ashbyhq.com/posting-api/job-board/{slug}"
@@ -59,7 +59,10 @@ async def fetch_board(client: httpx.AsyncClient, slug: str, display_name: str = 
             item.get("descriptionHtml")
         )
         # Ashby sets isRemote on any posting with a remote option, including
-        # hybrid roles. workplaceType is the stricter signal.
+        # hybrid roles. workplaceType is the stricter signal, but a "hybrid"
+        # workplaceType was previously falling through as remote alongside
+        # "onsite" -- excluded explicitly now, plus a check of the description
+        # for an in-office cadence workplaceType doesn't capture.
         workplace = (item.get("workplaceType") or "").lower()
         jobs.append(
             Job(
@@ -70,7 +73,9 @@ async def fetch_board(client: httpx.AsyncClient, slug: str, display_name: str = 
                 url=item.get("jobUrl", "") or item.get("applyUrl", ""),
                 location=_location(item),
                 remote=workplace == "remote" or (
-                    bool(item.get("isRemote")) and workplace != "onsite"
+                    bool(item.get("isRemote"))
+                    and workplace not in ("onsite", "hybrid")
+                    and not has_onsite_requirement(description)
                 ),
                 department=item.get("team") or item.get("department") or "",
                 description=description,

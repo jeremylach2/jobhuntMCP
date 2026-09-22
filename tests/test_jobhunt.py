@@ -85,6 +85,18 @@ def test_preferences_reads_targets_yaml(tmp_path):
         # "hybrid" wins over "remote": the role still requires relocation.
         (("Remote / Hybrid - SF",), False),
         (("San Francisco (on-site)", "Remote Engineer"), False),
+        # An in-office cadence stated only in the description, with nothing
+        # disqualifying in location/title, should still be caught.
+        (
+            ("Remote - US", "Senior Engineer", "Team is expected 4 days a week in the office."),
+            False,
+        ),
+        (
+            ("Remote", "Senior Engineer", "Onsite 3 days/week at our SF HQ is required."),
+            False,
+        ),
+        # A stray day-count with no office language shouldn't trip the check.
+        (("Remote - US", "Senior Engineer", "On-call rotation is 7 days a week."), True),
     ],
 )
 def test_looks_remote(fields, expected):

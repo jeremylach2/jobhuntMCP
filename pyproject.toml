@@ -18,6 +18,7 @@ jobhunt-mcp = "jobhunt.server:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.6", "mypy>=1.11"]
+pdf = ["markdown>=3.5", "xhtml2pdf>=0.2.15"]
 
 [build-system]
 requires = ["hatchling"]

@@ -80,6 +80,32 @@ REMOTE_HINTS = (
     "remote", "anywhere", "distributed", "work from home", "wfh", "virtual",
 )
 
+# Catches in-office cadence stated in prose ("4 days a week in the office",
+# "onsite 3 days/week") even when the words "hybrid"/"onsite" don't otherwise
+# appear near "remote". Seen in practice on postings tagged remote by their
+# location field alone, with the actual requirement buried in the description
+# body a few paragraphs down.
+_ONSITE_CADENCE_RE = re.compile(
+    r"\b\d(?:-\d)?\+?\s*days?\s*(?:a|per)\s*week\b[^.\n]{0,60}"
+    r"\b(?:in\s+(?:the\s+)?office|onsite|on-site|in-office)\b"
+    r"|\b(?:in\s+(?:the\s+)?office|onsite|on-site|in-office)\b[^.\n]{0,60}"
+    r"\b\d(?:-\d)?\+?\s*days?\s*(?:a|per)\s*week\b",
+    re.I,
+)
+
+
+def has_onsite_requirement(*fields: str | None) -> bool:
+    """True if any field states hybrid/onsite work, including an in-office cadence.
+
+    Split out from `looks_remote` so a source adapter can run it against the
+    full description too, not just location/title, since that's often where
+    the actual day-count requirement lives.
+    """
+    blob = " ".join(f for f in fields if f).lower()
+    if any(x in blob for x in ("hybrid", "on-site", "onsite", "in-office")):
+        return True
+    return bool(_ONSITE_CADENCE_RE.search(blob))
+
 
 def looks_remote(*fields: str | None) -> bool:
     """Heuristic remote detection.
@@ -89,6 +115,6 @@ def looks_remote(*fields: str | None) -> bool:
     the word `remote` also appears, since those postings require relocation.
     """
     blob = " ".join(f for f in fields if f).lower()
-    if any(x in blob for x in ("hybrid", "on-site", "onsite", "in-office")):
+    if has_onsite_requirement(blob):
         return False
     return any(hint in blob for hint in REMOTE_HINTS)

@@ -75,6 +75,22 @@ def _fmt_preferences(prefs: dict[str, Any]) -> str:
     return "\n".join(lines) if lines else "(none set, edit profile/targets.yaml to add some)"
 
 
+def _resolve_remote_only(remote_only: str) -> bool:
+    """Resolve the "auto"/"true"/"false" tri-state against the stored profile.
+
+    Plain `bool` params default to False, which is easy for a caller to leave
+    untouched even when profile/targets.yaml says remote is required -- the
+    list then quietly includes onsite roles. "auto" (the default) closes that
+    gap by reading the preference itself instead of relying on the caller to
+    remember it.
+    """
+    if remote_only == "true":
+        return True
+    if remote_only == "false":
+        return False
+    return str(_cfg.preferences.get("remote", "")).strip().lower() == "required"
+
+
 # --------------------------------------------------------------------- syncing
 
 
@@ -112,7 +128,7 @@ def search_jobs(
     query: str = "",
     company: str = "",
     source: str = "",
-    remote_only: bool = False,
+    remote_only: str = "auto",
     min_fit: int = -1,
     unscored_only: bool = False,
     exclude_applied: bool = False,
@@ -126,7 +142,9 @@ def search_jobs(
         query: Free text matched against title, description, and department.
         company: Filter to one company (substring match).
         source: One of greenhouse, ashby, lever, himalayas, hn, remoteok, manual.
-        remote_only: Only postings flagged remote.
+        remote_only: "auto" (default) restricts to remote postings when
+            profile/targets.yaml's preferences.remote is "required", otherwise
+            includes everything. Pass "true"/"false" to override.
         min_fit: Only postings you already scored at or above this (0-100).
         unscored_only: Only postings with no recorded fit assessment yet.
         exclude_applied: Hide anything already applied to or further along.
@@ -136,7 +154,7 @@ def search_jobs(
         query=query,
         company=company,
         source=source,
-        remote_only=remote_only,
+        remote_only=_resolve_remote_only(remote_only),
         min_score=min_fit if min_fit >= 0 else None,
         unscored_only=unscored_only,
         exclude_applied=exclude_applied,
@@ -274,7 +292,7 @@ def add_manual_posting(
 
 @mcp.tool(annotations=READ_ONLY)
 def shortlist_for_review(
-    limit: int = 25, remote_only: bool = False, source: str = ""
+    limit: int = 25, remote_only: str = "auto", source: str = ""
 ) -> str:
     """Pick the unscored postings most worth reading, so you can assess them.
 
@@ -285,12 +303,14 @@ def shortlist_for_review(
 
     Args:
         limit: How many candidates to return (default 25).
-        remote_only: Restrict to remote postings.
+        remote_only: "auto" (default) restricts to remote postings when
+            profile/targets.yaml's preferences.remote is "required", otherwise
+            includes everything. Pass "true"/"false" to override.
         source: Restrict to one source.
     """
     rows = store().search(
         unscored_only=True,
-        remote_only=remote_only,
+        remote_only=_resolve_remote_only(remote_only),
         source=source,
         limit=0,
         # relevance() only ever looks at the first 4000 chars. Fetching more
@@ -306,12 +326,12 @@ def shortlist_for_review(
 
     lines = [
         f"Screened {len(rows)} unscored postings, {len(ranked)} plausible. "
-        f"Top {min(limit, len(ranked))} to review "
-        f"(relevance is a keyword prefilter, not a fit judgment, "
-        f"read them with get_job before scoring):",
+        f"Top {min(limit, len(ranked))} to review. Each 'relevance=' number "
+        "is a keyword prefilter score, not a fit judgment -- read every "
+        "posting with get_job and score it yourself with record_fit:",
     ]
     for rel, row in ranked[:limit]:
-        line = f"  {rel.score:3d}  {_fmt_job_line(row)}"
+        line = f"  relevance={rel.score:<3d} {_fmt_job_line(row)}"
         if rel.flags:
             line += f"  !{', '.join(rel.flags)}"
         lines.append(line)

@@ -33,6 +33,7 @@ async def fetch_board(client: httpx.AsyncClient, slug: str, display_name: str = 
         if departments:
             department = departments[0].get("name", "")
         title = item.get("title", "")
+        description = html_to_text(item.get("content"))
         jobs.append(
             Job(
                 source=SOURCE,
@@ -41,9 +42,12 @@ async def fetch_board(client: httpx.AsyncClient, slug: str, display_name: str = 
                 title=title,
                 url=item.get("absolute_url", ""),
                 location=location,
-                remote=looks_remote(location, title),
+                # Checked against the description too: an in-office cadence
+                # ("4 days a week onsite") is often stated there rather than
+                # in the location field, which can otherwise read as remote.
+                remote=looks_remote(location, title, description),
                 department=department,
-                description=html_to_text(item.get("content")),
+                description=description,
                 posted_at=item.get("updated_at", "") or item.get("first_published", ""),
             )
         )
