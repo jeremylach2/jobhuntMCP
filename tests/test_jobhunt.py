@@ -42,7 +42,12 @@ def test_html_to_text_keeps_bullets_on_separate_lines():
 
 
 def test_html_to_text_decodes_entities():
-    assert html_to_text("<p>R&amp;D &mdash; 10&#37;</p>") == "R&D - 10%"
+    assert html_to_text("<p>R&amp;D &mdash; 10&#37; &rsquo;26</p>") == "R&D — 10% ’26"
+
+
+def test_html_to_text_never_turns_escaped_text_into_tags():
+    # A literal "&lt;" is text, not markup: it must survive, not be stripped.
+    assert html_to_text("<p>latency &lt;50ms &amp; p99 &gt; 2</p>") == "latency <50ms & p99 > 2"
 
 
 def test_html_to_text_handles_empty():
@@ -104,6 +109,31 @@ def test_preferences_reads_targets_yaml(tmp_path):
 )
 def test_looks_remote(fields, expected):
     assert looks_remote(*fields) is expected
+
+
+@pytest.mark.parametrize(
+    "location, description, expected",
+    [
+        # "distributed systems" is a skill, not a work arrangement.
+        ("San Francisco, CA; New York, NY", "Deep understanding of distributed systems.", False),
+        ("Seattle", "Experience with virtual machines.", False),
+        # Explicit remote wording in the body counts when the location is cities.
+        ("San Francisco; New York", "Can be held from a US hub or remotely in the United States.",
+         True),
+        ("United States", "This is a fully remote position.", True),
+        ("Austin, TX", "#LI-Remote", True),
+        # But a bare "remote" in prose does not.
+        ("Austin, TX", "You'll build our remote execution service.", False),
+        # Robinhood's phrasing: "in-person" next to a day count is an office cadence.
+        ("Bellevue, WA (remote)",
+         "In-person attendance expected at least 3 days per week.", False),
+        ("Remote - US", "In the office at least three days per week.", False),
+        # "in-person" alone (onboarding, offsites) doesn't make a remote role onsite.
+        ("Remote US", "All new hires attend an in-person onboarding experience.", True),
+    ],
+)
+def test_looks_remote_reads_description_for_explicit_signals_only(location, description, expected):
+    assert looks_remote(location, "Software Engineer", description=description) is expected
 
 
 # --------------------------------------------------------------------- storage
@@ -514,10 +544,14 @@ def test_retire_unseen_only_touches_one_source_and_old_sightings(store):
     assert active == {("himalayas", "2"), ("remoteok", "3")}
 
 
-async def test_greenhouse_prefers_first_published_over_updated_at():
+async def test_greenhouse_unescapes_content_and_prefers_first_published():
     payload = {"jobs": [{
         "id": 1, "title": "Backend Engineer", "absolute_url": "https://x/1",
-        "location": {"name": "Remote"}, "content": "",
+        "location": {"name": "Remote"},
+        # Greenhouse escapes its HTML, entities included.
+        "content": (
+            "&lt;h3&gt;About&lt;/h3&gt;&lt;ul&gt;&lt;li&gt;R&amp;amp;D&lt;/li&gt;&lt;/ul&gt;"
+        ),
         "first_published": "2026-03-01T00:00:00-04:00",
         "updated_at": "2026-09-20T00:00:00-04:00",
     }]}
@@ -526,6 +560,7 @@ async def test_greenhouse_prefers_first_published_over_updated_at():
     async with httpx.AsyncClient(transport=transport) as client:
         [job] = await greenhouse.fetch_board(client, "acme")
     assert job.posted_at == "2026-03-01T00:00:00-04:00"
+    assert job.description == "About\n- R&D"
 
 
 def test_lever_converts_epoch_ms_to_iso():
@@ -660,7 +695,7 @@ async def test_smartrecruiters_description_joins_sections_in_reading_order():
     async with httpx.AsyncClient(transport=_sr_transport(1, detail)) as client:
         text = await smartrecruiters.fetch_description(client, "Acme/0")
     assert text.index("The role") < text.index("You have") < text.index("Company")
-    assert "Build APIs." in text
+    assert "Build APIs." in text
     assert "- Python" in text
 
 
@@ -687,4 +722,4 @@ def test_resync_keeps_a_description_fetched_on_demand(store):
 
 
 def test_html_to_text_decodes_hex_entities():
-    assert html_to_text("a&#xa0;b&#x2014;c") == "a b—c"
+    assert html_to_text("a&#xa0;b&#x2014;c") == "a b—c"

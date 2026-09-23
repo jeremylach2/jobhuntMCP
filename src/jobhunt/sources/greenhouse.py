@@ -10,6 +10,7 @@ company's board URL, e.g. ``job-boards.greenhouse.io/anthropic`` -> ``anthropic`
 from __future__ import annotations
 
 import asyncio
+import html
 
 import httpx
 
@@ -33,7 +34,9 @@ async def fetch_board(client: httpx.AsyncClient, slug: str, display_name: str = 
         if departments:
             department = departments[0].get("name", "")
         title = item.get("title", "")
-        description = html_to_text(item.get("content"))
+        # Greenhouse HTML-escapes `content` ("&lt;p&gt;..."), so it has to be
+        # unescaped into real tags before they can be stripped.
+        description = html_to_text(html.unescape(item.get("content") or ""))
         jobs.append(
             Job(
                 source=SOURCE,
@@ -42,10 +45,11 @@ async def fetch_board(client: httpx.AsyncClient, slug: str, display_name: str = 
                 title=title,
                 url=item.get("absolute_url", ""),
                 location=location,
-                # Checked against the description too: an in-office cadence
-                # ("4 days a week onsite") is often stated there rather than
-                # in the location field, which can otherwise read as remote.
-                remote=looks_remote(location, title, description),
+                # The description is checked too, for an in-office cadence
+                # ("4 days a week onsite") the location field doesn't show, and
+                # for explicit remote wording ("remotely in the United States")
+                # on postings whose location is just a list of cities.
+                remote=looks_remote(location, title, description=description),
                 department=department,
                 description=description,
                 # first_published, not updated_at: any edit to a posting bumps

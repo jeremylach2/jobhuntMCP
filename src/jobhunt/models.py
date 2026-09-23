@@ -3,19 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import html as htmllib
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 _TAG_RE = re.compile(r"<[^>]+>")
-_WS_RE = re.compile(r"[ \t\r\f\v]+")
+_WS_RE = re.compile(r"[ \t\r\f\v\xa0]+")
 _BLANKS_RE = re.compile(r"\n{3,}")
-
-_ENTITIES = {
-    "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"',
-    "&#39;": "'", "&apos;": "'", "&nbsp;": " ", "&mdash;": "-", "&ndash;": "-",
-}
 
 
 def html_to_text(html: str | None) -> str:
@@ -24,16 +20,18 @@ def html_to_text(html: str | None) -> str:
     ATS descriptions are small, well-formed fragments, so a regex pass beats
     pulling in a parser dependency. Block tags become newlines so that bullet
     lists survive as separate lines instead of running together.
+
+    Entities are decoded only after tags are stripped, so a literal "&lt;"
+    in the text can't turn into a tag and get stripped. That means an
+    *escaped* fragment (Greenhouse's ``content``) must be unescaped by its
+    adapter first, or its tags come through as text.
     """
     if not html:
         return ""
     text = re.sub(r"(?i)<(br|/p|/div|/li|/h[1-6]|/tr)[^>]*>", "\n", html)
     text = re.sub(r"(?i)<li[^>]*>", "- ", text)
     text = _TAG_RE.sub("", text)
-    for entity, char in _ENTITIES.items():
-        text = text.replace(entity, char)
-    text = re.sub(r"&#(\d+);", lambda m: chr(int(m.group(1))), text)
-    text = re.sub(r"(?i)&#x([0-9a-f]+);", lambda m: chr(int(m.group(1), 16)), text)
+    text = htmllib.unescape(text)
     text = _WS_RE.sub(" ", text)
     text = "\n".join(line.strip() for line in text.split("\n"))
     return _BLANKS_RE.sub("\n\n", text).strip()
@@ -77,21 +75,33 @@ class Job:
         return f"[{self.id}] {self.company} - {self.title}" + (f" ({where})" if where else "")
 
 
-REMOTE_HINTS = (
-    "remote", "anywhere", "distributed", "work from home", "wfh", "virtual",
+# Matched against short location/title strings only. "distributed" and
+# "virtual" used to be here too, which made any description mentioning
+# "distributed systems" read as remote (about half of all remote-tagged
+# Greenhouse postings, measured 2026-09-22).
+REMOTE_HINTS = ("remote", "anywhere", "work from home", "wfh")
+
+# What counts as a remote signal inside a description, where a bare "remote"
+# is too noisy ("remote execution", "remote-first, but not remote-only").
+_REMOTE_PROSE_RE = re.compile(
+    r"fully remote|100% remote|remote[- ]first|remote[- ]friendly|#li-remote"
+    r"|open to remote|remote (?:position|role)|work from anywhere"
+    r"|(?:work|based|held|located)\s+remotely|remotely\s+(?:in|from|within)\b",
+    re.I,
 )
 
+_DAYS = r"\b(?:\d(?:-\d)?\+?|one|two|three|four|five)\s*days?\s*(?:a|per|/)\s*week\b"
+_OFFICE = r"\b(?:in\s+(?:the\s+)?office|onsite|on-site|in-office|in-person|in\s+person)\b"
+
 # Catches in-office cadence stated in prose ("4 days a week in the office",
-# "onsite 3 days/week") even when the words "hybrid"/"onsite" don't otherwise
-# appear near "remote". Seen in practice on postings tagged remote by their
-# location field alone, with the actual requirement buried in the description
-# body a few paragraphs down.
+# "in-person attendance expected at least three days per week") even when the
+# words "hybrid"/"onsite" don't otherwise appear near "remote". Seen in
+# practice on postings tagged remote by their location field alone, with the
+# actual requirement buried in the description body a few paragraphs down.
+# "in-person" only counts next to a day cadence: alone it's usually an
+# onboarding trip or offsite at a remote-first company.
 _ONSITE_CADENCE_RE = re.compile(
-    r"\b\d(?:-\d)?\+?\s*days?\s*(?:a|per)\s*week\b[^.\n]{0,60}"
-    r"\b(?:in\s+(?:the\s+)?office|onsite|on-site|in-office)\b"
-    r"|\b(?:in\s+(?:the\s+)?office|onsite|on-site|in-office)\b[^.\n]{0,60}"
-    r"\b\d(?:-\d)?\+?\s*days?\s*(?:a|per)\s*week\b",
-    re.I,
+    rf"{_DAYS}[^.\n]{{0,60}}{_OFFICE}|{_OFFICE}[^.\n]{{0,60}}{_DAYS}", re.I
 )
 
 
@@ -108,14 +118,18 @@ def has_onsite_requirement(*fields: str | None) -> bool:
     return bool(_ONSITE_CADENCE_RE.search(blob))
 
 
-def looks_remote(*fields: str | None) -> bool:
+def looks_remote(*fields: str | None, description: str | None = None) -> bool:
     """Heuristic remote detection.
 
-    ATS boards have no standard remote flag, so the location and title strings
-    are all we have. `hybrid` and `on-site` are treated as not-remote even when
-    the word `remote` also appears, since those postings require relocation.
+    ATS boards have no standard remote flag, so this reads the short fields
+    (location, title) for any remote hint, and the ``description`` only for
+    explicit remote phrasing. `hybrid`, `on-site`, and an in-office cadence
+    anywhere are treated as not-remote even when the word `remote` also
+    appears, since those postings require relocation.
     """
     blob = " ".join(f for f in fields if f).lower()
-    if has_onsite_requirement(blob):
+    if has_onsite_requirement(blob, description):
         return False
-    return any(hint in blob for hint in REMOTE_HINTS)
+    if any(hint in blob for hint in REMOTE_HINTS):
+        return True
+    return bool(description and _REMOTE_PROSE_RE.search(description))

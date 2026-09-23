@@ -71,7 +71,7 @@ async def fetch_board(client: httpx.AsyncClient, slug: str, display_name: str = 
                 remote=(
                     workplace.lower() == "remote"
                     if workplace
-                    else looks_remote(location, title, description)
+                    else looks_remote(location, title, description=description)
                 ),
                 department=categories.get("team", "") or categories.get("department", "") or "",
                 description=description,
