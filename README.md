@@ -72,10 +72,9 @@ reason to hammer a free public endpoint.
 
 ## Setup
 
-A fresh clone has none of your data -- `profile/` is entirely gitignored
-except the two `.example` templates, so there's no resume, no target
-companies, and no MCP registration yet. The `setup` skill (see
-`.claude/skills/setup/`) does all of the below conversationally: run it from
+The easiest and quickest way to get setup is running the `setup` skill (see
+`.claude/skills/setup/`).
+Run it from
 a Claude Code session in this repo (`/setup` or "set up jobhunt") and it will
 install dependencies, interview you for a resume, help you verify and add
 target companies, and register the server. To do it by hand instead:
