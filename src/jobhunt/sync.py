@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .config import Config
 from .db import Store
-from .sources import ashby, greenhouse, himalayas, hn, lever, remoteok
+from .sources import ATS, himalayas, hn, remoteok
 from .sources.base import make_client
+
+# Aggregator postings unseen for this long are retired. Generous on purpose:
+# RemoteOK's window is only its newest ~100 postings, and the HN thread is
+# replaced monthly, so a posting drops out of the feed long before it closes.
+FEED_RETIRE_DAYS = 30
 
 
 @dataclass
@@ -41,17 +47,16 @@ async def run_sync(
     return the whole market rather than a curated company list, which is useful
     for breadth but noisy as a default.
     """
-    sources = sources or ["greenhouse", "ashby", "lever"]
+    sources = sources or list(ATS)
     report = SyncReport()
 
     async with make_client() as client:
         for name in sources:
-            if name in ("greenhouse", "ashby", "lever"):
+            if name in ATS:
                 boards = cfg.boards(name)
                 if not boards:
                     continue
-                module = {"greenhouse": greenhouse, "ashby": ashby, "lever": lever}[name]
-                result = await module.sync(client, boards, delay=delay)
+                result = await ATS[name].sync(client, boards, delay=delay)
             elif name == "himalayas":
                 result = await himalayas.sync(client, cfg.keywords, delay=delay)
             elif name == "hn":
@@ -65,11 +70,16 @@ async def run_sync(
             new, seen = store.upsert_jobs(result.jobs)
 
             retired = 0
-            if name in ("greenhouse", "ashby", "lever") and result.fetched:
+            if name in ATS and result.fetched:
                 # Only retire boards that were actually reached this run.
                 retired = store.deactivate_missing(
                     name, result.fetched, {j.id for j in result.jobs}
                 )
+            elif result.fetched:
+                # Feeds are a rolling window, so absence from one fetch means
+                # nothing. Retire only what hasn't shown up in a while.
+                cutoff = datetime.now(UTC) - timedelta(days=FEED_RETIRE_DAYS)
+                retired = store.retire_unseen(name, cutoff.isoformat())
 
             report.new += new
             report.seen += seen

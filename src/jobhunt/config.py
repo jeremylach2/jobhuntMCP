@@ -15,12 +15,14 @@ from typing import Any
 
 import yaml
 
+from .sources import ATS
+
 PACKAGE_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_ROOT.parent.parent
 
 # Sources that are scoped to an explicit company list, vs. aggregators that are
 # scoped by keyword instead.
-ATS_SOURCES = ("greenhouse", "lever", "ashby")
+ATS_SOURCES = tuple(ATS)
 FEED_SOURCES = ("himalayas", "hn", "remoteok")
 
 

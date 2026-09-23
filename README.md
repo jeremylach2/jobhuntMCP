@@ -35,7 +35,7 @@ So the server does not try. It splits the work:
 
 | Layer | Does | Lives in |
 |---|---|---|
-| Ingestion | Fetch and normalize postings from six sources | `sources/` |
+| Ingestion | Fetch and normalize postings from seven sources | `sources/` |
 | Prefilter | Cheap keyword triage: cut ~9,000 postings to ~200 plausible ones | `scoring.py` |
 | Judgment | Read the shortlist and decide what actually fits | the model |
 | Memory | Persist assessments and pipeline state across sessions | `db.py` |
@@ -52,7 +52,7 @@ results costs a fraction of the context that reading one posting does.
 
 ## Sources
 
-All six are public, unauthenticated endpoints that employers publish for
+All seven are public, unauthenticated endpoints that employers publish for
 distribution. No scraping, no browser automation, no credentials.
 
 | Source | Endpoint | Scope |
@@ -60,12 +60,14 @@ distribution. No scraping, no browser automation, no credentials.
 | **Greenhouse** | `boards-api.greenhouse.io` | target company list |
 | **Ashby** | `api.ashbyhq.com/posting-api` | target company list, includes salary bands |
 | **Lever** | `api.lever.co/v0/postings` | target company list |
+| **SmartRecruiters** | `api.smartrecruiters.com/v1/companies` | target company list; descriptions fetched when a posting is first read |
 | **Himalayas** | `himalayas.app/jobs/api` | whole remote market, keyword-filtered |
 | **Hacker News** | `hn.algolia.com` | monthly "Who is hiring?" thread |
 | **RemoteOK** | `remoteok.com/api` | whole remote market, keyword-filtered |
 
 LinkedIn and Indeed are deliberately absent: both prohibit automated access in
-their terms, and both actively block it. Anything from those goes in by hand.
+their terms, and both actively block it. Workday is absent too: it has no
+documented public feed. Anything from those goes in by hand.
 
 Boards are fetched serially with a one-second delay. A personal tool has no
 reason to hammer a free public endpoint.
@@ -119,7 +121,10 @@ The same data without a model in the loop, useful for cron:
 jobhunt sync                              # pull all ATS boards
 jobhunt sync --sources himalayas,hn,remoteok  # add the aggregators
 jobhunt search "agent" --remote --limit 20
+jobhunt search --new 1                    # first seen in the last day
+jobhunt shortlist --posted 14             # skip roles open for months
 jobhunt shortlist --limit 30              # keyword-ranked triage
+jobhunt find "Northwind Labs"             # which ATS board, verified live
 jobhunt show a3f9c21d
 jobhunt status a3f9c21d applied --notes "referred by X"
 jobhunt pipeline
@@ -131,7 +136,7 @@ jobhunt stats
 | Tool | Purpose |
 |---|---|
 | `sync_boards` | Fetch the latest postings into local storage |
-| `search_jobs` | Browse stored postings as one-line summaries |
+| `search_jobs` | Browse stored postings as one-line summaries, filterable to what's new (`new_within_days`) or freshly posted (`posted_within_days`) |
 | `get_job` | Read one posting in full |
 | `shortlist_for_review` | Rank unscored postings by keyword relevance for triage |
 | `get_profile` | Return your resume, criteria, and preferences, as context for judging fit |
@@ -141,7 +146,8 @@ jobhunt stats
 | `add_note` | Append a timestamped note to a posting's history |
 | `add_manual_posting` | Enter a posting by hand (for sources that can't be fetched) |
 | `list_applications` | Show the pipeline |
-| `list_targets` / `add_target` | Manage the watched company list |
+| `find_company_board` | Find and verify a company's ATS board from its name or any link to it |
+| `list_targets` / `add_target` | Manage the watched company list (`add_target` checks the board exists first) |
 | `stats` | Summarize storage and pipeline state |
 
 ## Configuration
@@ -151,13 +157,16 @@ the aggregator sources, and a `preferences` block (locations, remote, salary
 floor, company stage) that `get_profile` surfaces to the model as judgment
 context. It starts as a copy of `profile/targets.example.yaml` (see Setup
 above) and is gitignored from there. Edit it by hand, the same way you'd edit
-keywords. Verify each slug against the live endpoint before adding it. To add
-a company, read the slug out of its careers URL:
+keywords. Verify each slug against the live endpoint before adding it:
+`jobhunt find "Company"` guesses and probes slugs for you, or pass
+`--url` with any link to one of its postings. The slug is the path segment
+in the company's board URL:
 
 ```
 job-boards.greenhouse.io/SLUG   -> greenhouse
 jobs.ashbyhq.com/SLUG           -> ashby
 jobs.lever.co/SLUG              -> lever
+jobs.smartrecruiters.com/SLUG   -> smartrecruiters
 ```
 
 If a company changes ATS, its board starts failing rather than silently going

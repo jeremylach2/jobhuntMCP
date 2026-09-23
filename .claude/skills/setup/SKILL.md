@@ -62,23 +62,19 @@ Otherwise:
    `add_target` is for adding one company later, after the comments are
    already gone from a save; it's the wrong tool for filling in the first
    batch.
-3. Ask the user which companies to watch. For each one, get its careers page
-   and figure out the ATS + slug from the URL shape:
-   ```
-   job-boards.greenhouse.io/SLUG   -> greenhouse
-   jobs.ashbyhq.com/SLUG           -> ashby
-   jobs.lever.co/SLUG              -> lever
-   ```
-   Then verify the slug against the live endpoint before writing it in --
-   guessed slugs fail silently-ish (they land under `errors` in the sync
-   report, easy to skim past):
+3. Ask the user which companies to watch. For each one, find and verify its
+   board with the CLI (the MCP server isn't registered yet at this point):
    ```bash
-   curl -s "https://boards-api.greenhouse.io/v1/boards/SLUG/jobs" | head -c 200
-   curl -s "https://api.ashbyhq.com/posting-api/job-board/SLUG" | head -c 200
-   curl -s "https://api.lever.co/v0/postings/SLUG?mode=json" | head -c 200
+   jobhunt find "Company Name"
+   jobhunt find --url "https://job-boards.greenhouse.io/acme/jobs/123"
    ```
-   A Lever bad slug returns HTTP 200 with `{"ok": false}` -- check the body,
-   not the status code.
+   It prints each live `source:slug` with its posting count and sample
+   titles. A name guess can land on a different company that shares the
+   slug, so check the titles look right before writing it in. If nothing is
+   found, ask the user for a link to one of the company's postings and pass
+   that as `--url`. If the company uses an ATS other than greenhouse, ashby,
+   lever, or smartrecruiters (e.g. Workday), it can't be synced; say so and
+   move on.
 4. Ask about `keywords` (what makes a posting worth a look -- only used to
    filter the keyword-scoped aggregators, himalayas/hn/remoteok, not the ATS
    boards), `exclude_keywords` (soft de-prioritize signal), and `preferences`

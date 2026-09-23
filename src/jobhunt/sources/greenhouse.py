@@ -48,7 +48,9 @@ async def fetch_board(client: httpx.AsyncClient, slug: str, display_name: str = 
                 remote=looks_remote(location, title, description),
                 department=department,
                 description=description,
-                posted_at=item.get("updated_at", "") or item.get("first_published", ""),
+                # first_published, not updated_at: any edit to a posting bumps
+                # updated_at, which made months-old roles look freshly posted.
+                posted_at=item.get("first_published", "") or item.get("updated_at", ""),
             )
         )
     return jobs

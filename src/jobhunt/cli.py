@@ -12,10 +12,13 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import UTC, datetime, timedelta
 
 from . import config
 from .db import STATUSES, Store
 from .scoring import triage
+from .sources import discover
+from .sources.base import make_client
 from .sync import run_sync
 
 
@@ -25,11 +28,19 @@ def _line(row) -> str:
         bits.append(f"({row['location']})")
     if row["compensation"]:
         bits.append(f"[{row['compensation']}]")
+    if (row["posted_at"] or "")[:4].isdigit():
+        bits.append(f"[posted {row['posted_at'][:10]}]")
     if row["score"] is not None:
         bits.append(f"[fit {row['score']}]")
     if row["status"]:
         bits.append(f"[{row['status']}]")
     return " ".join(bits)
+
+
+def _days_ago(days: int) -> str:
+    if days <= 0:
+        return ""
+    return (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
 
 def cmd_sync(args, cfg, store) -> int:
@@ -49,6 +60,8 @@ def cmd_search(args, cfg, store) -> int:
         min_score=args.min_fit if args.min_fit >= 0 else None,
         unscored_only=args.unscored,
         exclude_applied=args.exclude_applied,
+        new_since=_days_ago(args.new),
+        posted_since=_days_ago(args.posted),
         limit=args.limit,
         description_limit=0,  # _line() never reads it
     )
@@ -86,7 +99,11 @@ def cmd_show(args, cfg, store) -> int:
 
 def cmd_shortlist(args, cfg, store) -> int:
     rows = store.search(
-        unscored_only=True, remote_only=args.remote, limit=0, description_limit=4000
+        unscored_only=True,
+        remote_only=args.remote,
+        posted_since=_days_ago(args.posted),
+        limit=0,
+        description_limit=4000,
     )
     ranked = triage(rows, cfg.keywords)
     if not ranked:
@@ -95,6 +112,23 @@ def cmd_shortlist(args, cfg, store) -> int:
     print(f"Screened {len(rows)} unscored, {len(ranked)} plausible:", file=sys.stderr)
     for rel, row in ranked[: args.limit]:
         print(f"{rel.score:3d}  {_line(row)}")
+    return 0
+
+
+def cmd_find(args, cfg, store) -> int:
+    async def run() -> discover.DiscoveryResult:
+        async with make_client() as client:
+            return await discover.find_boards(client, args.company, args.url)
+
+    result = asyncio.run(run())
+    for m in result.matches:
+        sample = "; ".join(m.sample_titles)
+        print(f"{m.source}:{m.slug}  {m.job_count} posting(s)  e.g. {sample}")
+    for key, err in result.errors.items():
+        print(f"could not check {key}: {err}", file=sys.stderr)
+    if not result.matches:
+        print(f"No board found. Tried: {', '.join(result.tried) or 'nothing'}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -137,8 +171,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("sync", help="fetch the latest postings from job boards")
-    p.add_argument("--sources", default="greenhouse,ashby,lever",
-                   help="comma-separated: greenhouse, ashby, lever, himalayas, hn, remoteok")
+    p.add_argument("--sources", default="greenhouse,ashby,lever,smartrecruiters",
+                   help="comma-separated: greenhouse, ashby, lever, smartrecruiters, "
+                        "himalayas, hn, remoteok")
     p.add_argument("--delay", type=float, default=1.0,
                    help="seconds between board fetches (default 1.0)")
     p.set_defaults(func=cmd_sync)
@@ -151,6 +186,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-fit", type=int, default=-1, dest="min_fit")
     p.add_argument("--unscored", action="store_true")
     p.add_argument("--exclude-applied", action="store_true", dest="exclude_applied")
+    p.add_argument("--new", type=int, default=0, metavar="DAYS",
+                   help="only postings first seen in the last DAYS days")
+    p.add_argument("--posted", type=int, default=0, metavar="DAYS",
+                   help="only postings the employer posted in the last DAYS days")
     p.add_argument("--limit", type=int, default=40)
     p.set_defaults(func=cmd_search)
 
@@ -162,7 +201,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("shortlist", help="rank unscored postings by keyword relevance")
     p.add_argument("--limit", type=int, default=25)
     p.add_argument("--remote", action="store_true")
+    p.add_argument("--posted", type=int, default=0, metavar="DAYS",
+                   help="only postings the employer posted in the last DAYS days")
     p.set_defaults(func=cmd_shortlist)
+
+    p = sub.add_parser("find", help="find and verify a company's ATS board slug")
+    p.add_argument("company", nargs="?", default="")
+    p.add_argument("--url", default="", help="a link that may point at the ATS board")
+    p.set_defaults(func=cmd_find)
 
     p = sub.add_parser("status", help="set an application status")
     p.add_argument("job_id")

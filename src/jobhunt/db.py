@@ -198,8 +198,13 @@ class Store:
                     location    = excluded.location,
                     remote      = excluded.remote,
                     department  = excluded.department,
-                    description = excluded.description,
+                    -- A source that only lists postings (SmartRecruiters) sends
+                    -- no description; keep one fetched on demand earlier.
+                    description = CASE WHEN excluded.description != ''
+                                       THEN excluded.description
+                                       ELSE jobs.description END,
                     compensation = excluded.compensation,
+                    posted_at   = excluded.posted_at,
                     last_seen   = excluded.last_seen,
                     active      = 1
                 """,
@@ -207,6 +212,13 @@ class Store:
             )
         self.conn.commit()
         return new, seen
+
+    def set_description(self, job_id: str, description: str) -> None:
+        """Cache a description fetched after sync, for list-only sources."""
+        self.conn.execute(
+            "UPDATE jobs SET description = ? WHERE id = ?", (description, job_id)
+        )
+        self.conn.commit()
 
     def deactivate_missing(self, source: str, companies: list[str], keep_ids: set[str]) -> int:
         """Retire postings that vanished from a freshly synced board.
@@ -228,6 +240,23 @@ class Store:
         self.conn.commit()
         return len(stale)
 
+    def retire_unseen(self, source: str, before: str) -> int:
+        """Retire a source's postings not seen in any sync since ``before``.
+
+        For the aggregator feeds, which return a rolling window of the market
+        rather than a company's complete board: a posting missing from one
+        fetch has usually just scrolled out of the window, not closed, so
+        `deactivate_missing` would be wrong for them. Age since last sighting
+        is the only signal they give. Callers must only run this after the
+        source was actually reached, same as `deactivate_missing`.
+        """
+        cur = self.conn.execute(
+            "UPDATE jobs SET active = 0 WHERE source = ? AND active = 1 AND last_seen < ?",
+            (source, before),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
     def search(
         self,
         query: str = "",
@@ -237,6 +266,7 @@ class Store:
         min_score: int | None = None,
         unscored_only: bool = False,
         new_since: str = "",
+        posted_since: str = "",
         include_inactive: bool = False,
         exclude_applied: bool = False,
         limit: int = 50,
@@ -251,6 +281,10 @@ class Store:
         capped. A bulk caller that only needs metadata (a one-line summary,
         a triage prefix) should pass this rather than fetching every
         posting's full text just to discard it.
+
+        ``new_since`` filters on when this tool first saw a posting;
+        ``posted_since`` on when the employer says it was posted. Both take an
+        ISO date or datetime.
         """
         desc_col = "j.description"
         args: list[Any] = []
@@ -286,6 +320,15 @@ class Store:
         if new_since:
             sql.append("AND j.first_seen >= ?")
             args.append(new_since)
+        if posted_since:
+            # posted_at is ISO for every synced source, but free text for
+            # manual postings. Those fall back to first_seen rather than being
+            # silently dropped or compared as garbage strings.
+            sql.append(
+                "AND (CASE WHEN j.posted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'"
+                " THEN substr(j.posted_at, 1, 10) ELSE substr(j.first_seen, 1, 10) END) >= ?"
+            )
+            args.append(posted_since[:10])
         if exclude_applied:
             sql.append("AND (a.status IS NULL OR a.status = 'interested')")
         sql.append("ORDER BY f.score IS NULL, f.score DESC, j.first_seen DESC")

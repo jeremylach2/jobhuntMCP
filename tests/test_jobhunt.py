@@ -7,12 +7,15 @@ you ask for them: ``pytest -m live``.
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from jobhunt import config
 from jobhunt.db import Store
 from jobhunt.models import Job, html_to_text, looks_remote
 from jobhunt.scoring import relevance
+from jobhunt.sources import discover, greenhouse, smartrecruiters
+from jobhunt.sources.lever import _iso_from_ms
 
 
 def make_job(**kwargs) -> Job:
@@ -330,6 +333,24 @@ async def test_remoteok_endpoint_still_returns_expected_shape():
     assert all(j.url and j.title and j.remote for j in result.jobs)
 
 
+@pytest.mark.live
+async def test_smartrecruiters_endpoint_still_returns_expected_shape():
+    from jobhunt.sources.base import make_client
+    from jobhunt.sources.smartrecruiters import fetch_description, probe_board
+
+    async with make_client() as client:
+        count, titles = await probe_board(client, "ServiceNow")
+        assert count > 0 and titles
+        # One posting is enough to check the detail shape; the full board is pages.
+        resp = await client.get(
+            smartrecruiters.BASE.format(slug="ServiceNow"), params={"limit": 1}
+        )
+        job = smartrecruiters._to_job(resp.json()["content"][0], "ServiceNow", "ServiceNow")
+        assert job.title and job.posted_at
+        text = await fetch_description(client, job.source_id)
+    assert text, "the detail endpoint should carry the posting text"
+
+
 def test_exists(store):
     job = make_job()
     store.upsert_jobs([job])
@@ -440,3 +461,230 @@ def test_store_is_usable_from_multiple_threads(store):
         t.join()
 
     assert not errors, f"threaded access failed: {errors[:3]}"
+
+
+# ------------------------------------------------------------------ dates
+
+
+def test_search_posted_since_filters_on_employer_date(store):
+    store.upsert_jobs([
+        make_job(source_id="1", title="Fresh", posted_at="2026-09-20T10:00:00-04:00"),
+        make_job(source_id="2", title="Stale", posted_at="2026-03-01T10:00:00Z"),
+    ])
+    titles = [r["title"] for r in store.search(posted_since="2026-09-01")]
+    assert titles == ["Fresh"]
+
+
+def test_search_posted_since_falls_back_to_first_seen_for_free_text_dates(store):
+    # A manual posting's "posted" is whatever the model typed. It shouldn't be
+    # string-compared against an ISO cutoff, nor silently dropped.
+    job = make_job(source="manual", posted_at="3 days ago")
+    store.upsert_jobs([job])
+    assert len(store.search(posted_since="2000-01-01")) == 1
+    assert len(store.search(posted_since="2999-01-01")) == 0
+
+
+def test_search_new_since_filters_on_first_seen(store):
+    store.upsert_jobs([
+        make_job(source_id="1", title="Old", first_seen="2026-01-01T00:00:00+00:00"),
+        make_job(source_id="2", title="New"),
+    ])
+    titles = [r["title"] for r in store.search(new_since="2026-06-01")]
+    assert titles == ["New"]
+
+
+def test_upsert_refreshes_posted_at(store):
+    # A source's posted date is authoritative, so a corrected value from a
+    # later sync (e.g. an adapter fix) has to overwrite the stored one.
+    store.upsert_jobs([make_job(posted_at="1700000000000")])
+    store.upsert_jobs([make_job(posted_at="2023-11-14T22:13:20+00:00")])
+    assert store.get_job(make_job().id)["posted_at"] == "2023-11-14T22:13:20+00:00"
+
+
+def test_retire_unseen_only_touches_one_source_and_old_sightings(store):
+    store.upsert_jobs([
+        make_job(source="remoteok", source_id="1"),
+        make_job(source="himalayas", source_id="2"),
+    ])
+    store.conn.execute("UPDATE jobs SET last_seen = '2026-01-01T00:00:00+00:00'")
+    store.upsert_jobs([make_job(source="remoteok", source_id="3")])  # seen now
+
+    assert store.retire_unseen("remoteok", "2026-06-01T00:00:00+00:00") == 1
+    active = {(r["source"], r["source_id"]) for r in store.search()}
+    assert active == {("himalayas", "2"), ("remoteok", "3")}
+
+
+async def test_greenhouse_prefers_first_published_over_updated_at():
+    payload = {"jobs": [{
+        "id": 1, "title": "Backend Engineer", "absolute_url": "https://x/1",
+        "location": {"name": "Remote"}, "content": "",
+        "first_published": "2026-03-01T00:00:00-04:00",
+        "updated_at": "2026-09-20T00:00:00-04:00",
+    }]}
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, json=payload))
+
+    async with httpx.AsyncClient(transport=transport) as client:
+        [job] = await greenhouse.fetch_board(client, "acme")
+    assert job.posted_at == "2026-03-01T00:00:00-04:00"
+
+
+def test_lever_converts_epoch_ms_to_iso():
+    assert _iso_from_ms(1700000000000) == "2023-11-14T22:13:20+00:00"
+    assert _iso_from_ms(None) == ""
+
+
+# ------------------------------------------------------------ board discovery
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("https://job-boards.greenhouse.io/anthropic/jobs/402", [("greenhouse", "anthropic")]),
+        ("https://boards.greenhouse.io/embed/job_board?for=stripe", [("greenhouse", "stripe")]),
+        ("https://jobs.ashbyhq.com/deepgram/1395ef4d", [("ashby", "deepgram")]),
+        ("https://jobs.lever.co/curai/a5e85c45-912f", [("lever", "curai")]),
+        ("https://jobs.smartrecruiters.com/ServiceNow/1", [("smartrecruiters", "ServiceNow")]),
+        ("https://builtin.com/job/ai-engineer/10949758", []),
+    ],
+)
+def test_slugs_from_text(url, expected):
+    assert discover.slugs_from_text(url) == expected
+
+
+def test_guess_slugs_tries_joined_hyphenated_and_suffixless_forms():
+    assert discover.guess_slugs("Together AI") == ["togetherai", "together-ai", "together"]
+    assert discover.guess_slugs("Monte Carlo") == ["montecarlo", "monte-carlo", "monte"]
+    assert discover.guess_slugs("") == []
+
+
+def _ats_transport(live: dict[str, object]) -> httpx.MockTransport:
+    """Answer ATS API requests from ``live`` (url substring -> JSON body), 404 otherwise."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        for needle, body in live.items():
+            if needle in str(request.url):
+                return httpx.Response(200, json=body)
+        return httpx.Response(404, json={"ok": False})
+    return httpx.MockTransport(handler)
+
+
+async def test_find_boards_by_name_returns_only_live_boards_with_evidence():
+    transport = _ats_transport({
+        "posting-api/job-board/deepgram": {"jobs": [{"id": "a", "title": "ML Engineer"}]},
+    })
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await discover.find_boards(client, company="Deepgram", delay=0)
+    assert [(m.source, m.slug, m.job_count) for m in result.matches] == [("ashby", "deepgram", 1)]
+    assert result.matches[0].sample_titles == ["ML Engineer"]
+    assert "greenhouse:deepgram" in result.tried
+    assert result.errors == {}
+
+
+async def test_find_boards_prefers_url_over_name_guesses():
+    transport = _ats_transport({"boards/acme-corp/jobs": {"jobs": []}})
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await discover.find_boards(
+            client, company="Acme", url="https://job-boards.greenhouse.io/acme-corp", delay=0
+        )
+    assert result.tried == ["greenhouse:acme-corp"]
+    assert [m.slug for m in result.matches] == ["acme-corp"]
+
+
+async def test_probe_reports_server_errors_instead_of_calling_the_slug_wrong():
+    transport = httpx.MockTransport(lambda req: httpx.Response(503))
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await discover.find_boards(client, company="Acme", delay=0)
+    assert result.matches == []
+    assert result.errors["greenhouse:acme"] == "HTTP 503"
+
+
+# ------------------------------------------------------------ smartrecruiters
+
+
+def _sr_posting(i: int, **loc) -> dict:
+    return {
+        "id": str(i), "name": f"Engineer {i}", "releasedDate": "2026-09-20T00:00:00.000Z",
+        "location": {"fullLocation": "Austin, TX, United States", **loc},
+        "department": {"label": "Engineering"},
+    }
+
+
+def _sr_transport(total: int, detail: dict | None = None) -> httpx.MockTransport:
+    """A paged SmartRecruiters list of ``total`` postings, plus one detail body."""
+    postings = [_sr_posting(i) for i in range(total)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") > 4:  # /v1/companies/{slug}/postings/{id}
+            return httpx.Response(200, json=detail or {})
+        limit = int(request.url.params.get("limit", 100))
+        offset = int(request.url.params.get("offset", 0))
+        page = postings[offset:offset + limit]
+        return httpx.Response(200, json={"totalFound": total, "content": page})
+    return httpx.MockTransport(handler)
+
+
+async def test_smartrecruiters_pages_through_the_whole_board():
+    async with httpx.AsyncClient(transport=_sr_transport(250)) as client:
+        jobs = await smartrecruiters.fetch_board(client, "Acme", "Acme Corp", delay=0)
+    assert len(jobs) == 250
+    assert len({j.id for j in jobs}) == 250
+    job = jobs[0]
+    assert (job.company, job.source_id) == ("Acme Corp", "Acme/0")
+    assert job.url == "https://jobs.smartrecruiters.com/Acme/0"
+    assert job.description == ""  # fetched on first read, not during sync
+
+
+async def test_smartrecruiters_empty_board_is_an_error_not_a_quiet_success():
+    # Unknown companies return 200 + an empty list, indistinguishable from a
+    # real board with nothing open. Neither should count as "fetched".
+    async with httpx.AsyncClient(transport=_sr_transport(0)) as client:
+        result = await smartrecruiters.sync(client, {"Nope": "Nope"}, delay=0)
+    assert result.fetched == []
+    assert "Nope" in result.errors
+
+
+@pytest.mark.parametrize(
+    "loc, remote",
+    [({"remote": True}, True), ({"remote": True, "hybrid": True}, False), ({}, False)],
+)
+def test_smartrecruiters_remote_flag(loc, remote):
+    job = smartrecruiters._to_job(_sr_posting(1, **loc), "Acme", "Acme")
+    assert job.remote is remote
+
+
+async def test_smartrecruiters_description_joins_sections_in_reading_order():
+    detail = {"jobAd": {"sections": {
+        "companyDescription": {"title": "Company", "text": "<p>We make things.</p>"},
+        "jobDescription": {"title": "The role", "text": "<p>Build&#xa0;APIs.</p>"},
+        "qualifications": {"title": "You have", "text": "<ul><li>Python</li></ul>"},
+    }}}
+    async with httpx.AsyncClient(transport=_sr_transport(1, detail)) as client:
+        text = await smartrecruiters.fetch_description(client, "Acme/0")
+    assert text.index("The role") < text.index("You have") < text.index("Company")
+    assert "Build APIs." in text
+    assert "- Python" in text
+
+
+async def test_discovery_probes_smartrecruiters_with_one_request():
+    calls = []
+    inner = _sr_transport(5000)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return inner.handle_request(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        match = await discover.probe(client, "smartrecruiters", "Acme")
+    assert match is not None and match.job_count == 5000
+    assert len(calls) == 1
+
+
+def test_resync_keeps_a_description_fetched_on_demand(store):
+    job = make_job(source="smartrecruiters", source_id="Acme/1", description="")
+    store.upsert_jobs([job])
+    store.set_description(job.id, "Fetched on first read.")
+    store.upsert_jobs([job])  # the list feed again, still without a description
+    assert store.get_job(job.id)["description"] == "Fetched on first read."
+
+
+def test_html_to_text_decodes_hex_entities():
+    assert html_to_text("a&#xa0;b&#x2014;c") == "a b—c"

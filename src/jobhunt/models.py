@@ -33,6 +33,7 @@ def html_to_text(html: str | None) -> str:
     for entity, char in _ENTITIES.items():
         text = text.replace(entity, char)
     text = re.sub(r"&#(\d+);", lambda m: chr(int(m.group(1))), text)
+    text = re.sub(r"(?i)&#x([0-9a-f]+);", lambda m: chr(int(m.group(1), 16)), text)
     text = _WS_RE.sub(" ", text)
     text = "\n".join(line.strip() for line in text.split("\n"))
     return _BLANKS_RE.sub("\n\n", text).strip()

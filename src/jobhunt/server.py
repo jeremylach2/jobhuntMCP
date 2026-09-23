@@ -19,6 +19,8 @@ results costs a fraction of the context that reading one posting does.
 from __future__ import annotations
 
 import json
+import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -28,6 +30,8 @@ from . import config
 from .db import STATUSES, Store
 from .models import Job
 from .scoring import triage
+from .sources import ATS, discover, smartrecruiters
+from .sources.base import make_client
 from .sync import run_sync
 
 mcp = MCPServer(
@@ -52,6 +56,9 @@ def store() -> Store:
 # the network, so a client can call them freely without confirmation.
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 
+# Synced sources store ISO timestamps; manual postings may hold free text.
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
 
 def _fmt_job_line(row: Any) -> str:
     bits = [f"[{row['id']}] {row['company']} - {row['title']}"]
@@ -62,11 +69,20 @@ def _fmt_job_line(row: Any) -> str:
         bits.append("[remote]")
     if row["compensation"]:
         bits.append(f"[{row['compensation']}]")
+    if _ISO_DATE.match(row["posted_at"] or ""):
+        bits.append(f"[posted {row['posted_at'][:10]}]")
     if row["score"] is not None:
         bits.append(f"[fit {row['score']}]")
     if row["status"]:
         bits.append(f"[{row['status']}]")
     return " ".join(bits)
+
+
+def _days_ago(days: int) -> str:
+    """ISO cutoff for an "in the last N days" param. 0 or less means no filter."""
+    if days <= 0:
+        return ""
+    return (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
 
 def _fmt_preferences(prefs: dict[str, Any]) -> str:
@@ -102,7 +118,7 @@ def _resolve_remote_only(remote_only: str) -> bool:
         open_world_hint=True,
     )
 )
-async def sync_boards(sources: str = "greenhouse,ashby,lever") -> str:
+async def sync_boards(sources: str = "greenhouse,ashby,lever,smartrecruiters") -> str:
     """Fetch the latest postings from the configured job boards into local storage.
 
     Run this first in a session, or whenever results look stale. Takes roughly a
@@ -111,13 +127,16 @@ async def sync_boards(sources: str = "greenhouse,ashby,lever") -> str:
 
     Args:
         sources: Comma-separated. ATS boards scoped to the target company list:
-            greenhouse, ashby, lever. Keyword-scoped aggregators covering the
-            wider market: himalayas (remote roles), hn (Who-is-hiring thread),
-            remoteok (remote roles).
+            greenhouse, ashby, lever, smartrecruiters. Keyword-scoped
+            aggregators covering the wider market: himalayas (remote roles),
+            hn (Who-is-hiring thread), remoteok (remote roles).
     """
     wanted = [s.strip() for s in sources.split(",") if s.strip()]
     report = await run_sync(_cfg, store(), wanted)
-    return json.dumps(report.as_dict(), indent=2)
+    out = json.dumps(report.as_dict(), indent=2)
+    if report.new:
+        out += "\n\nTo list the new postings: search_jobs(new_within_days=1)."
+    return out
 
 
 # -------------------------------------------------------------------- browsing
@@ -132,22 +151,31 @@ def search_jobs(
     min_fit: int = -1,
     unscored_only: bool = False,
     exclude_applied: bool = False,
+    new_within_days: int = 0,
+    posted_within_days: int = 0,
     limit: int = 40,
 ) -> str:
     """Search stored postings. Returns one line per job, not full descriptions.
 
     Use this to browse and narrow down. Use get_job to actually read one.
+    For "what's new since the last sync", pass new_within_days=1 (or however
+    many days since the user last synced).
 
     Args:
         query: Free text matched against title, description, and department.
         company: Filter to one company (substring match).
-        source: One of greenhouse, ashby, lever, himalayas, hn, remoteok, manual.
+        source: One of greenhouse, ashby, lever, smartrecruiters, himalayas, hn,
+            remoteok, manual.
         remote_only: "auto" (default) restricts to remote postings when
             profile/targets.yaml's preferences.remote is "required", otherwise
             includes everything. Pass "true"/"false" to override.
         min_fit: Only postings you already scored at or above this (0-100).
         unscored_only: Only postings with no recorded fit assessment yet.
         exclude_applied: Hide anything already applied to or further along.
+        new_within_days: Only postings this tool first saw in the last N days
+            (i.e. new to you). 0 (default) means no filter.
+        posted_within_days: Only postings the employer posted in the last N
+            days (i.e. fresh on the market). 0 (default) means no filter.
         limit: Max results (default 40).
     """
     rows = store().search(
@@ -158,6 +186,8 @@ def search_jobs(
         min_score=min_fit if min_fit >= 0 else None,
         unscored_only=unscored_only,
         exclude_applied=exclude_applied,
+        new_since=_days_ago(new_within_days),
+        posted_since=_days_ago(posted_within_days),
         limit=limit,
         # The one-line summary never reads the description. Skip pulling it
         # out of SQLite so browsing a wide result set stays cheap.
@@ -169,8 +199,29 @@ def search_jobs(
     return f"{len(rows)} posting(s):\n" + "\n".join(lines)
 
 
-@mcp.tool(annotations=READ_ONLY)
-def get_job(job_id: str, full_description: bool = True) -> str:
+async def _description(row: Any) -> str:
+    """The stored description, fetching and caching it first for list-only sources.
+
+    SmartRecruiters' list feed has no description text (see that adapter), so
+    it's fetched the first time someone actually reads the posting. A failed
+    fetch returns a note rather than raising: the metadata is still useful.
+    """
+    if row["description"] or row["source"] != "smartrecruiters":
+        return row["description"] or ""
+    try:
+        async with make_client() as client:
+            text = await smartrecruiters.fetch_description(client, row["source_id"])
+    except Exception as exc:  # noqa: BLE001
+        return f"(couldn't fetch the description: {type(exc).__name__}. Open the url instead.)"
+    if text:
+        store().set_description(row["id"], text)
+    return text
+
+
+# Reads local state, but can reach the network once per posting to fill in a
+# description a list-only source didn't include.
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))
+async def get_job(job_id: str, full_description: bool = True) -> str:
     """Read one posting in full, including its description and any saved assessment.
 
     Args:
@@ -222,9 +273,10 @@ def get_job(job_id: str, full_description: bool = True) -> str:
         out.append(f"\n--- company notes (as of {company_notes['updated_at'][:10]}) ---")
         out.append(company_notes["notes"])
 
-    if full_description and row["description"]:
+    description = await _description(row) if full_description else ""
+    if description:
         out.append("\n--- description ---")
-        out.append(row["description"][:12000])
+        out.append(description[:12000])
 
     return "\n".join(out)
 
@@ -246,7 +298,11 @@ def add_manual_posting(
     posted_at: str = "",
 ) -> str:
     """Add a posting from outside the synced boards (a Workday link, a company's
-    own careers page, anything not on greenhouse/ashby/lever/himalayas/hn/remoteok).
+    own careers page, anything not on a synced board).
+
+    Before adding one by hand, try find_company_board: if the company has a
+    board that can be synced, add_target it instead and later postings arrive
+    on their own.
 
     Fetch and read the posting yourself first (e.g. with a web-fetch tool), then
     pass what you found here. This does not fetch the URL itself. Once added, the
@@ -292,7 +348,10 @@ def add_manual_posting(
 
 @mcp.tool(annotations=READ_ONLY)
 def shortlist_for_review(
-    limit: int = 25, remote_only: str = "auto", source: str = ""
+    limit: int = 25,
+    remote_only: str = "auto",
+    source: str = "",
+    posted_within_days: int = 0,
 ) -> str:
     """Pick the unscored postings most worth reading, so you can assess them.
 
@@ -307,11 +366,15 @@ def shortlist_for_review(
             profile/targets.yaml's preferences.remote is "required", otherwise
             includes everything. Pass "true"/"false" to override.
         source: Restrict to one source.
+        posted_within_days: Only postings the employer posted in the last N
+            days, to skip roles that have sat open for months. 0 (default)
+            means no filter.
     """
     rows = store().search(
         unscored_only=True,
         remote_only=_resolve_remote_only(remote_only),
         source=source,
+        posted_since=_days_ago(posted_within_days),
         limit=0,
         # relevance() only ever looks at the first 4000 chars. Fetching more
         # than that for the whole unscored corpus is pure waste.
@@ -509,11 +572,72 @@ def list_applications(status: str = "") -> str:
 # --------------------------------------------------------------------- targets
 
 
+def _watched(source: str, slug: str) -> str:
+    """Display name if (source, slug) is already on the target list, else ""."""
+    return _cfg.boards(source).get(slug, "")
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))
+async def find_company_board(company: str = "", url: str = "") -> str:
+    """Find which ATS board (greenhouse, ashby, lever, smartrecruiters) a company uses.
+
+    Use this before add_target, and whenever a posting came from somewhere
+    that can't be synced (builtin.com, a careers page): if the company has a
+    board here, adding it means future postings sync automatically instead of
+    being entered by hand.
+
+    Pass a url if you have one. A link to the posting on the ATS itself
+    (job-boards.greenhouse.io/..., jobs.ashbyhq.com/..., jobs.lever.co/...,
+    jobs.smartrecruiters.com/...) is exact. Otherwise it guesses slugs from
+    the company name, which can hit a different company with the same name:
+    check the sample titles look right before calling add_target.
+
+    Args:
+        company: Company name, e.g. "Monte Carlo".
+        url: Optional. Any link that may point at the company's ATS board.
+    """
+    if not company.strip() and not url.strip():
+        return "Pass a company name, a url, or both."
+    async with make_client() as client:
+        result = await discover.find_boards(client, company, url)
+    if not result.tried:
+        return "That url doesn't link to a supported ATS. Pass the company name too."
+
+    lines = []
+    for m in result.matches:
+        line = f"  {m.source}:{m.slug} - {m.job_count} open posting(s)"
+        if m.sample_titles:
+            line += ", e.g. " + "; ".join(m.sample_titles)
+        if watched := _watched(m.source, m.slug):
+            line += f"  (already watched as {watched!r})"
+        lines.append(line)
+    if lines:
+        head = f"Found {len(lines)} board(s) for {company or url!r}:"
+        tail = (
+            "If the sample titles fit this company and it isn't already watched, "
+            "call add_target(source, slug, display_name)."
+        )
+        return "\n".join([head, *lines, tail])
+
+    out = [f"No board found. Tried: {', '.join(result.tried)}."]
+    if result.errors:
+        errs = ", ".join(f"{k} ({v})" for k, v in result.errors.items())
+        out.append(f"Could not check: {errs}. Retry later before concluding anything.")
+    out.append(
+        "If you can open the company's careers page, look for a link to "
+        "job-boards.greenhouse.io, jobs.ashbyhq.com, jobs.lever.co, or "
+        "jobs.smartrecruiters.com and pass "
+        "it as url. If it uses another ATS (e.g. Workday), it can't be synced: "
+        "add its postings with add_manual_posting instead."
+    )
+    return "\n".join(out)
+
+
 @mcp.tool(annotations=READ_ONLY)
 def list_targets() -> str:
     """List the company boards currently being watched, grouped by source."""
     out = []
-    for source in ("greenhouse", "ashby", "lever"):
+    for source in ATS:
         boards = _cfg.boards(source)
         if boards:
             names = ", ".join(sorted(boards.values()))
@@ -523,30 +647,41 @@ def list_targets() -> str:
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+        read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True
     )
 )
-def add_target(source: str, slug: str, display_name: str = "") -> str:
-    """Add a company board to the watch list. The slug is not checked here.
+async def add_target(source: str, slug: str, display_name: str = "") -> str:
+    """Add a company board to the watch list, after checking it exists.
 
-    The slug is the path segment from the company's careers URL, for example
-    jobs.ashbyhq.com/acme -> slug "acme" on source "ashby". Run sync_boards
-    afterward to actually verify it. A wrong slug shows up in that report's
-    errors rather than failing this call.
+    Use find_company_board first if you don't already know the exact source
+    and slug. The slug is the path segment from the company's board URL, for
+    example jobs.ashbyhq.com/acme -> slug "acme" on source "ashby".
 
     Args:
-        source: greenhouse, ashby, or lever.
+        source: greenhouse, ashby, lever, or smartrecruiters.
         slug: The company's slug on that ATS.
-        display_name: Human-readable name. Defaults to the slug.
+        display_name: Human-readable name, e.g. "Monte Carlo". Defaults to the slug.
     """
-    if source not in ("greenhouse", "ashby", "lever"):
-        return "source must be one of: greenhouse, ashby, lever"
+    if source not in ATS:
+        return f"source must be one of: {', '.join(ATS)}"
+    slug = slug.strip()
+    if watched := _watched(source, slug):
+        return f"{source}:{slug} is already watched as {watched!r}."
+    async with make_client() as client:
+        try:
+            match = await discover.probe(client, source, slug)
+        except Exception as exc:  # noqa: BLE001
+            return f"Couldn't reach {source} to verify {slug!r} ({type(exc).__name__}). Not added."
+    if match is None:
+        return (
+            f"No {source} board with slug {slug!r}. Not added. "
+            "Use find_company_board to look up the right one."
+        )
     _cfg.targets["companies"].setdefault(source, {})[slug] = display_name or slug
     _cfg.save_targets()
     return (
-        f"Added {display_name or slug} ({source}:{slug}). "
-        f"Run sync_boards to pull it in. If the slug is wrong, "
-        f"the sync report will list it under errors."
+        f"Added {display_name or slug} ({source}:{slug}, {match.job_count} open posting(s)). "
+        "Run sync_boards to pull them in."
     )
 
 

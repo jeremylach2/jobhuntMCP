@@ -19,9 +19,12 @@ src/jobhunt/
   config.py      Loads profile/targets.yaml + env path overrides
   scoring.py     Keyword PREFILTER + triage() dedup. Not an evaluator.
   sync.py        Orchestrates sources -> store
-  server.py      MCP server (14 tools, the primary interface)
+  server.py      MCP server (the primary interface)
   cli.py         argparse CLI (the same data, for cron/scripting)
-  sources/       One adapter per board. Each exposes async sync()
+  sources/       One adapter per board. Each exposes async sync(). The
+                 company-scoped ones are registered in sources/__init__.ATS
+                 and also expose fetch_board(); discover.py finds and
+                 verifies a company's board slug through them
 profile/
   targets.yaml   Watched company slugs + keywords + preferences (GITIGNORED, never commit)
   targets.example.yaml  Public template
@@ -80,44 +83,50 @@ applies to Glassdoor/Comparably.
   default cap there silently hides most of the corpus. This was a real bug.
 - **`first_seen` is preserved on upsert.** It's how "what's new" works.
 - **`deactivate_missing` is scoped to boards actually fetched.** A failed sync
-  must never retire postings from a board it couldn't reach.
+  must never retire postings from a board it couldn't reach. Aggregator feeds
+  are a rolling window, so they use `retire_unseen` (not seen in 30 days)
+  instead, under the same only-if-reached rule.
+- **`posted_at` is ISO 8601 for every synced source.** Date filters compare it
+  as text. Convert in the adapter (see Lever's epoch-ms handling).
 - **Adapters never raise on one bad board.** A wrong slug among 90 companies
   gets collected into `SourceResult.errors`, not propagated.
 
 ## Working with the sources
 
-All five endpoints are public and unauthenticated: no keys, no scraping, no
+All six endpoints are public and unauthenticated: no keys, no scraping, no
 browser. Fetch serially with ~1s delay. Don't parallelize a free endpoint.
 
 | Source | Notes |
 |---|---|
 | Greenhouse | `?content=true` returns descriptions inline (one request per board) |
 | Ashby | Richest: plain text + `isRemote` + salary bands. Use the `posting-api`, **not** the GraphQL endpoint |
-| Lever | Returns `{"ok": false}` with HTTP 200 for a bad slug, so check the shape, not the status |
+| Lever | A bad slug returns `{"ok": false}` (now with a 404; it used to be a 200), so the adapter checks the shape, not just the status. Slugs are case-sensitive |
+| SmartRecruiters | List endpoint has no descriptions: sync stores postings without one and `get_job` fetches and caches it on first read. Unknown company = 200 with an empty list, reported as an error |
 | Himalayas | Whole remote market, keyword-filtered locally or it floods the DB |
 | HN | Free-form comment text. Deliberately barely parsed. Let the model read it |
 
 **Never add LinkedIn or Indeed.** Both prohibit automated access in their terms
 and actively block it. That part of the search stays manual, by decision. The
-same applies to Glassdoor/Comparably for company-review scraping. See the
+same applies to Glassdoor/Comparably for company-review scraping.
+
+**Workday is out of scope too.** It has no documented public feed, only the
+undocumented JSON endpoint its careers pages call internally. Workday postings
+go in through `add_manual_posting`. See the
 `company_notes` corollary above for how that's handled instead.
 
 **Verify slugs before adding them to `targets.yaml`.** Every slug in there was
 probed against the live endpoint first. Guessed slugs fail silently-ish (they
 show up under `errors` in the sync report, which is easy to skim past).
-
-```bash
-curl -s "https://boards-api.greenhouse.io/v1/boards/SLUG/jobs" | head -c 200
-curl -s "https://api.ashbyhq.com/posting-api/job-board/SLUG" | head -c 200
-curl -s "https://api.lever.co/v0/postings/SLUG?mode=json" | head -c 200
-```
+`jobhunt find "Company"` (or the `find_company_board` MCP tool) does the
+probing; `add_target` refuses a slug that doesn't probe. Lever slugs are
+case-sensitive, so don't normalize case.
 
 ## Commands
 
 ```bash
 uv pip install -e ".[dev]"
 pre-commit install        # one-time; runs ruff+mypy on staged files at commit
-pytest                    # 35 offline tests
+pytest                    # offline tests
 pytest -m live            # hits real endpoints, run when touching sources/
 jobhunt sync              # ~93 boards, a couple of minutes
 jobhunt shortlist --limit 25

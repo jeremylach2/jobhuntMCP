@@ -12,6 +12,9 @@
 #   job-boards.greenhouse.io/SLUG   -> greenhouse
 #   jobs.lever.co/SLUG              -> lever
 #   jobs.ashbyhq.com/SLUG           -> ashby
+#   jobs.smartrecruiters.com/SLUG   -> smartrecruiters
+#
+# Or let `jobhunt find "Company Name"` find and verify the slug for you.
 
 # Terms that make a posting worth a look. Used to filter the keyword-scoped
 # aggregator sources (himalayas, hn). ATS boards are pulled in full and
@@ -58,3 +61,9 @@ companies:
   # Kept wired up so a board can be added without a code change.
   lever:
     neon: Neon
+
+  # ----------------------------------------------------------- smartrecruiters
+  # Mostly larger employers. Descriptions are fetched when a posting is first
+  # read, not during sync, so a big board still syncs in seconds.
+  smartrecruiters:
+    ServiceNow: ServiceNow

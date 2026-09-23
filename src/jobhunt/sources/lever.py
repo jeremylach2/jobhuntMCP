@@ -11,6 +11,7 @@ checked explicitly.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 import httpx
 
@@ -19,6 +20,14 @@ from .base import SourceResult
 
 BASE = "https://api.lever.co/v0/postings/{slug}"
 SOURCE = "lever"
+
+
+def _iso_from_ms(value: object) -> str:
+    """Lever timestamps are epoch milliseconds. Every other source stores ISO
+    strings, and date filtering compares them as text, so convert here."""
+    if not isinstance(value, (int, float)):
+        return ""
+    return datetime.fromtimestamp(value / 1000, tz=UTC).isoformat()
 
 
 def _description(item: dict) -> str:
@@ -66,7 +75,7 @@ async def fetch_board(client: httpx.AsyncClient, slug: str, display_name: str = 
                 ),
                 department=categories.get("team", "") or categories.get("department", "") or "",
                 description=description,
-                posted_at=str(item.get("createdAt", "")),
+                posted_at=_iso_from_ms(item.get("createdAt")),
             )
         )
     return jobs
