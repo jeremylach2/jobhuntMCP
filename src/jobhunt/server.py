@@ -129,7 +129,9 @@ async def sync_boards(sources: str = "greenhouse,ashby,lever,smartrecruiters") -
         sources: Comma-separated. ATS boards scoped to the target company list:
             greenhouse, ashby, lever, smartrecruiters. Keyword-scoped
             aggregators covering the wider market: himalayas (remote roles),
-            hn (Who-is-hiring thread), remoteok (remote roles).
+            hn (Who-is-hiring thread), remoteok (remote roles). Also freehire:
+            remote contract and part-time postings (needs FREEHIRE_API_KEY);
+            use it when the user wants short engagements, not full-time roles.
     """
     wanted = [s.strip() for s in sources.split(",") if s.strip()]
     report = await run_sync(_cfg, store(), wanted)
@@ -165,7 +167,7 @@ def search_jobs(
         query: Free text matched against title, description, and department.
         company: Filter to one company (substring match).
         source: One of greenhouse, ashby, lever, smartrecruiters, himalayas, hn,
-            remoteok, manual.
+            remoteok, freehire, manual.
         remote_only: "auto" (default) restricts to remote postings when
             profile/targets.yaml's preferences.remote is "required", otherwise
             includes everything. Pass "true"/"false" to override.

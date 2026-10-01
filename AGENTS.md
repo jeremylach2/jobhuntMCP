@@ -93,8 +93,11 @@ applies to Glassdoor/Comparably.
 
 ## Working with the sources
 
-All six endpoints are public and unauthenticated: no keys, no scraping, no
-browser. Fetch serially with ~1s delay. Don't parallelize a free endpoint.
+Every endpoint but Freehire is public and unauthenticated: no keys, no
+scraping, no browser. Freehire takes a Bearer key from `FREEHIRE_API_KEY`
+(env var, or a gitignored root `.env` that `config.load` reads); without it the
+adapter reports an error and makes no request. Fetch serially with ~1s delay.
+Don't parallelize a free endpoint.
 
 | Source | Notes |
 |---|---|

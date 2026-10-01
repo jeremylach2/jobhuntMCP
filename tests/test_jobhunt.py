@@ -7,6 +7,8 @@ you ask for them: ``pytest -m live``.
 
 from __future__ import annotations
 
+import os
+
 import httpx
 import pytest
 
@@ -160,6 +162,127 @@ def test_remoteok_salary_formats_range_and_single_value():
     assert _salary({"salary_min": 70000, "salary_max": 90000}) == "USD 70,000 - 90,000"
     assert _salary({"salary_min": 70000, "salary_max": 0}) == "USD 70,000"
     assert _salary({"salary_min": 0, "salary_max": 0}) == ""
+
+
+# ------------------------------------------------------------------ freehire
+
+
+def test_freehire_to_job_maps_fields_and_employment_type():
+    from jobhunt.sources.freehire import _to_job
+
+    job = _to_job(
+        {
+            "public_slug": "mcp-engineer-acme-1a2b",
+            "title": "MCP Engineer",
+            "company": "Acme",
+            "location": "Remote - US",
+            "description": "<p>Build MCP servers.</p>",
+            "url": "https://example.com/1",
+            "posted_at": "2026-09-28T00:00:00Z",
+            "enrichment": {
+                "employment_type": "contract",
+                "salary_min": 60,
+                "salary_max": 90,
+                "salary_currency": "USD",
+                "salary_period": "hour",
+            },
+        }
+    )
+    assert job.source == "freehire" and job.source_id == "mcp-engineer-acme-1a2b"
+    assert job.remote is True
+    assert job.department == "contract"
+    assert job.compensation == "USD 60 - 90 / hour"
+    assert job.description == "Build MCP servers."
+
+
+def test_freehire_to_job_decodes_html_entities_in_short_fields():
+    from jobhunt.sources.freehire import _to_job
+
+    job = _to_job(
+        {
+            "public_slug": "s",
+            "title": "Senior Data &amp; LLM Engineer (AI&#8209;Ready)",
+            "company": "Q&amp;A Co",
+            "location": "Remote &amp; US",
+        }
+    )
+    assert job.title == "Senior Data & LLM Engineer (AI‑Ready)"
+    assert job.company == "Q&A Co"
+    assert job.location == "Remote & US"
+
+
+async def test_freehire_sends_region_filter(monkeypatch):
+    from jobhunt.sources.freehire import sync
+
+    monkeypatch.setenv("FREEHIRE_API_KEY", "k")
+    params = []
+
+    def handler(request):
+        params.append(dict(request.url.params))
+        return httpx.Response(200, json={"data": [], "meta": {"total": 0}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await sync(client, queries=["AI"], delay=0)
+        await sync(client, queries=["AI"], delay=0, regions=["global"])
+    assert params[0]["regions"] == "north_america,global"
+    assert params[-1]["regions"] == "global"
+
+
+def test_freehire_compensation_handles_missing_enrichment():
+    from jobhunt.sources.freehire import _compensation
+
+    assert _compensation({}) == ""
+    assert _compensation({"salary_min": 5000, "salary_currency": "EUR"}) == "EUR 5,000"
+
+
+async def test_freehire_without_api_key_reports_error_and_makes_no_request(monkeypatch):
+
+    from jobhunt.sources.freehire import sync
+
+    monkeypatch.delenv("FREEHIRE_API_KEY", raising=False)
+
+    def boom(request):
+        raise AssertionError("no request should be made without a key")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(boom)) as client:
+        result = await sync(client)
+    assert result.jobs == [] and result.fetched == []
+    assert "FREEHIRE_API_KEY" in result.errors["freehire"]
+
+
+async def test_freehire_sync_dedupes_across_queries_and_skips_closed(monkeypatch):
+
+    from jobhunt.sources.freehire import sync
+
+    monkeypatch.setenv("FREEHIRE_API_KEY", "test-key")
+    seen_auth = []
+
+    def handler(request):
+        seen_auth.append(request.headers["authorization"])
+        items = [
+            {"public_slug": "a", "title": "A", "company": "X", "closed_at": None},
+            {"public_slug": "b", "title": "B", "company": "X", "closed_at": "2026-01-01"},
+        ]
+        return httpx.Response(200, json={"data": items, "meta": {"total": 2}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await sync(client, queries=["AI", "LLM"], delay=0)
+    assert [j.source_id for j in result.jobs] == ["a"]
+    assert result.fetched == ["freehire"]
+    assert set(seen_auth) == {"Bearer test-key"}
+
+
+def test_load_dotenv_sets_missing_vars_but_never_overrides(tmp_path, monkeypatch):
+    from jobhunt.config import load_dotenv
+
+    env = tmp_path / ".env"
+    env.write_text("# c\nJH_NEW='quoted'\nJH_KEEP=fromfile\n", encoding="utf-8")
+    monkeypatch.delenv("JH_NEW", raising=False)
+    monkeypatch.setenv("JH_KEEP", "fromenv")
+    load_dotenv(env)
+    assert os.environ["JH_NEW"] == "quoted"
+    assert os.environ["JH_KEEP"] == "fromenv"
+    monkeypatch.delenv("JH_NEW")  # load_dotenv wrote it outside monkeypatch's tracking
 
 
 @pytest.fixture

@@ -8,7 +8,7 @@ from typing import Any
 
 from .config import Config
 from .db import Store
-from .sources import ATS, himalayas, hn, remoteok
+from .sources import ATS, freehire, himalayas, hn, remoteok
 from .sources.base import make_client
 
 # Aggregator postings unseen for this long are retired. Generous on purpose:
@@ -63,6 +63,11 @@ async def run_sync(
                 result = await hn.sync(client, cfg.keywords)
             elif name == "remoteok":
                 result = await remoteok.sync(client, cfg.keywords)
+            elif name == "freehire":
+                opts = cfg.targets.get("freehire", {}) or {}
+                result = await freehire.sync(
+                    client, opts.get("queries"), delay=delay, regions=opts.get("regions")
+                )
             else:
                 report.errors[name] = "unknown source"
                 continue

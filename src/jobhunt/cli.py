@@ -173,7 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("sync", help="fetch the latest postings from job boards")
     p.add_argument("--sources", default="greenhouse,ashby,lever,smartrecruiters",
                    help="comma-separated: greenhouse, ashby, lever, smartrecruiters, "
-                        "himalayas, hn, remoteok")
+                        "himalayas, hn, remoteok, freehire")
     p.add_argument("--delay", type=float, default=1.0,
                    help="seconds between board fetches (default 1.0)")
     p.set_defaults(func=cmd_sync)

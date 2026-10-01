@@ -64,6 +64,7 @@ distribution. No scraping, no browser automation, no credentials.
 | **Himalayas** | `himalayas.app/jobs/api` | whole remote market, keyword-filtered |
 | **Hacker News** | `hn.algolia.com` | monthly "Who is hiring?" thread |
 | **RemoteOK** | `remoteok.com/api` | whole remote market, keyword-filtered |
+| **Freehire** | `freehire.me/api/v1` | remote contract and part-time postings for AI-flavoured queries. Needs `FREEHIRE_API_KEY` (env var or a root `.env`); the queries can be overridden with `freehire.queries` in `targets.yaml` |
 
 LinkedIn and Indeed are deliberately absent: both prohibit automated access in
 their terms, and both actively block it. Workday is absent too: it has no

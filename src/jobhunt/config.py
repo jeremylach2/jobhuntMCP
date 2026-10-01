@@ -23,12 +23,33 @@ PROJECT_ROOT = PACKAGE_ROOT.parent.parent
 # Sources that are scoped to an explicit company list, vs. aggregators that are
 # scoped by keyword instead.
 ATS_SOURCES = tuple(ATS)
-FEED_SOURCES = ("himalayas", "hn", "remoteok")
+FEED_SOURCES = ("himalayas", "hn", "remoteok", "freehire")
 
 
 def _path_from_env(var: str, default: Path) -> Path:
     raw = os.environ.get(var)
     return Path(raw).expanduser() if raw else default
+
+
+def load_dotenv(path: Path) -> None:
+    """Load ``KEY=value`` lines from ``path`` into the environment.
+
+    Existing environment variables win, so a real export or the MCP server's
+    registered env overrides the file. Deliberately minimal (no quoting rules
+    beyond stripping matching quotes, no interpolation) to avoid a dependency
+    for one secret.
+    """
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ.setdefault(key.strip(), value)
 
 
 @dataclass
@@ -80,6 +101,7 @@ class Config:
 
 def load(root: Path | None = None) -> Config:
     root = root or _path_from_env("JOBHUNT_HOME", PROJECT_ROOT)
+    load_dotenv(root / ".env")
     targets_path = _path_from_env("JOBHUNT_TARGETS", root / "profile" / "targets.yaml")
     cfg = Config(
         root=root,
