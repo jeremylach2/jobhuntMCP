@@ -79,6 +79,17 @@ class Config:
         """
         return dict(self.targets.get("preferences", {}) or {})
 
+    @property
+    def market_countries(self) -> list[str]:
+        """Countries `search_market` restricts himalayas results to, from
+        ``market.countries`` in targets.yaml. Empty means no restriction.
+
+        Unlike `preferences`, this *is* applied as a filter: whether a posting
+        will hire from your country is eligibility, not fit.
+        """
+        market = self.targets.get("market", {}) or {}
+        return [str(c).strip() for c in market.get("countries", []) or [] if str(c).strip()]
+
     def boards(self, source: str) -> dict[str, str]:
         """Return {slug: display_name} for one ATS source."""
         raw = (self.targets.get("companies", {}) or {}).get(source, {}) or {}

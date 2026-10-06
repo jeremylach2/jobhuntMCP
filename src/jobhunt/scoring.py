@@ -133,6 +133,11 @@ def relevance(
     return Relevance(max(0, min(100, score)), matched, flags)
 
 
+def variant_key(row) -> tuple[str, str]:
+    """(company, title), case-folded: rows sharing it are one role's location variants."""
+    return (row["company"].lower(), row["title"].strip().lower())
+
+
 def triage(rows, keywords: list[str] | None = None) -> list[tuple[Relevance, object]]:
     """Rank unscored postings and collapse near-duplicates.
 
@@ -149,7 +154,7 @@ def triage(rows, keywords: list[str] | None = None) -> list[tuple[Relevance, obj
         )
         if rel.score <= 0:
             continue
-        key = (row["company"].lower(), row["title"].strip().lower())
+        key = variant_key(row)
         if key not in best or rel.score > best[key][0].score:
             best[key] = (rel, row)
     ranked = list(best.values())

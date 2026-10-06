@@ -21,8 +21,10 @@ from ..models import Job, html_to_text
 from .base import SourceResult
 
 BASE = "https://himalayas.app/jobs/api"
+SEARCH = "https://himalayas.app/jobs/api/search"
 SOURCE = "himalayas"
 PAGE_SIZE = 100
+SEARCH_PAGE_SIZE = 20  # fixed by the search endpoint; it ignores ?limit=
 
 
 def _salary(item: dict) -> str:
@@ -99,4 +101,48 @@ async def sync(
         result.fetched.append("himalayas")
     except Exception as exc:  # noqa: BLE001
         result.note_error("himalayas", exc)
+    return result
+
+
+async def search(
+    client: httpx.AsyncClient,
+    query: str,
+    max_results: int = 60,
+    delay: float = 1.0,
+    country: str = "",
+) -> SourceResult:
+    """Search Himalayas' whole catalog server-side for ``query``.
+
+    Unlike ``sync`` this isn't limited to the newest few hundred postings or
+    to the profile keywords: it's for an ad-hoc "what's out there for X".
+
+    ``country`` (a name like "United States" or an ISO code like "US") keeps
+    only postings hirable from there, worldwide-open ones included. The API
+    takes one country per request and 400s on a name it doesn't know.
+    """
+    result = SourceResult(source=SOURCE)
+    label = f"himalayas[{country}]" if country else "himalayas"
+    try:
+        page = 1
+        while len(result.jobs) < max_results:
+            params: dict[str, str | int] = {"q": query, "page": page}
+            if country:
+                params["country"] = country
+            resp = await client.get(SEARCH, params=params)
+            resp.raise_for_status()
+            payload = resp.json()
+            batch = payload.get("jobs", [])
+            result.jobs.extend(_to_job(i) for i in batch)
+            # Trust totalCount, not page length: a page can come back one
+            # short (19 of 20) with more pages still to go.
+            offset = payload.get("offset", 0) or 0
+            limit = payload.get("limit", SEARCH_PAGE_SIZE) or SEARCH_PAGE_SIZE
+            if not batch or offset + limit >= (payload.get("totalCount") or 0):
+                break
+            page += 1
+            await asyncio.sleep(delay)
+        del result.jobs[max_results:]
+        result.fetched.append(label)
+    except Exception as exc:  # noqa: BLE001
+        result.note_error(label, exc)
     return result

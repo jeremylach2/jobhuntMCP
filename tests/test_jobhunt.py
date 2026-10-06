@@ -449,6 +449,149 @@ def test_relevance_never_leaves_the_0_100_range():
     assert 0 <= loaded.score <= 100
 
 
+# -------------------------------------------------------------- market search
+
+
+async def test_himalayas_search_pages_by_total_count_not_page_length_and_caps_results():
+    from jobhunt.sources.himalayas import search
+
+    pages = []
+
+    def handler(request):
+        page = int(request.url.params["page"])
+        pages.append(page)
+        # Real pages sometimes come back one short (19 of 20) mid-results.
+        size = {1: 19, 2: 20, 3: 3}[page]
+        jobs = [{"guid": f"g{page}-{i}", "title": "Data Engineer"} for i in range(size)]
+        payload = {"jobs": jobs, "offset": (page - 1) * 20, "limit": 20, "totalCount": 43}
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await search(client, "data engineer", max_results=100, delay=0)
+        assert pages == [1, 2, 3]
+        assert len(result.jobs) == 19 + 20 + 3
+        assert all(j.remote and j.source == "himalayas" for j in result.jobs)
+
+        capped = await search(client, "data engineer", max_results=5, delay=0)
+        assert len(capped.jobs) == 5
+
+
+async def test_hn_search_keeps_only_top_level_postings():
+    from jobhunt.sources.hn import search
+
+    def handler(request):
+        if request.url.params.get("tags") == "story,author_whoishiring":
+            hits = [{"objectID": "100", "title": "Ask HN: Who is hiring? (October 2026)"}]
+            return httpx.Response(200, json={"hits": hits})
+        assert request.url.params["tags"] == "comment,story_100"
+        hits = [
+            {"objectID": "1", "parent_id": 100, "author": "a",
+             "comment_text": "Acme | Rust Engineer | Remote (US)",
+             "created_at": "2026-10-01T00:00:00Z"},
+            {"objectID": "2", "parent_id": 1, "author": "b",
+             "comment_text": "Is this role open to EU?", "created_at": "2026-10-02T00:00:00Z"},
+        ]
+        return httpx.Response(200, json={"hits": hits})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await search(client, "rust")
+    assert not result.errors
+    assert [(j.company, j.title) for j in result.jobs] == [("Acme", "Rust Engineer")]
+    assert result.jobs[0].remote
+
+
+async def test_market_search_stores_results_and_never_retires(store, monkeypatch):
+    from jobhunt import sync as sync_mod
+    from jobhunt.sources.base import SourceResult
+
+    old = make_job(source="himalayas", source_id="old", title="Stale")
+    store.upsert_jobs([old])
+    fresh = make_job(source="himalayas", source_id="new", title="Rust Engineer")
+
+    async def fake_search(client, query, max_results, delay):
+        return SourceResult(source="himalayas", jobs=[fresh], fetched=["himalayas"])
+
+    monkeypatch.setattr(sync_mod.himalayas, "search", fake_search)
+    result = await sync_mod.run_market_search(store, "rust", ["himalayas", "bogus"])
+
+    assert result.job_ids == [fresh.id]
+    assert result.new == 1
+    assert "bogus" in result.errors
+    assert store.get_job(fresh.id) is not None
+    assert store.get_job(old.id)["active"] == 1
+
+
+def test_search_ids_filter_matches_only_those_and_empty_matches_nothing(store):
+    a, b, c = (make_job(source_id=str(i), title=f"Role {i}") for i in range(3))
+    store.upsert_jobs([a, b, c])
+    rows = store.search(ids=[c.id, a.id], limit=0, description_limit=0)
+    assert {r["id"] for r in rows} == {a.id, c.id}
+    assert store.search(ids=[], limit=0) == []
+
+
+def test_market_rows_keeps_source_order_and_collapses_location_variants(store):
+    from jobhunt.sync import market_rows
+
+    pl = make_job(source="himalayas", source_id="pl", company="MetalBear",
+                  title="Backend Engineer", location="Poland", description="x" * 5000)
+    uk = make_job(source="himalayas", source_id="uk", company="metalbear",
+                  title="Backend Engineer ", location="United Kingdom")
+    other = make_job(source="hn", source_id="1", company="Acme", title="Rust Engineer")
+    store.upsert_jobs([pl, uk, other])
+
+    roles = market_rows(store, [other.id, pl.id, uk.id, "missing"])
+    assert [(row["id"], extra) for row, extra in roles] == [(other.id, 0), (pl.id, 1)]
+    assert roles[1][0]["description"] == ""  # never pulled out of SQLite
+
+
+async def test_himalayas_search_by_country_merges_dedupes_and_isolates_bad_country():
+    from jobhunt.sync import _himalayas_by_country
+
+    asked = []
+
+    def handler(request):
+        country = request.url.params.get("country")
+        asked.append(country)
+        if country == "Narnia":
+            return httpx.Response(400, json={"ok": False, "errors": "Invalid country"})
+        jobs = [{"guid": "both", "title": "Agent Engineer"},
+                {"guid": f"only-{country}", "title": "Agent Engineer"}]
+        return httpx.Response(200, json={"jobs": jobs})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await _himalayas_by_country(client, "agent", ["US", "Narnia", "CA"], 60, 0)
+
+    assert asked == ["US", "Narnia", "CA"]
+    assert sorted(j.source_id for j in result.jobs) == ["both", "only-CA", "only-US"]
+    assert result.errors == {"himalayas[Narnia]": "HTTP 400"}
+    assert result.fetched == ["himalayas[US]", "himalayas[CA]"]
+
+
+async def test_himalayas_search_without_country_sends_no_country_param():
+    from jobhunt.sources.himalayas import search
+
+    params = []
+
+    def handler(request):
+        params.append(dict(request.url.params))
+        return httpx.Response(200, json={"jobs": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await search(client, "agent", delay=0)
+    assert "country" not in params[0]
+
+
+def test_market_countries_reads_targets_and_drops_blanks(tmp_path):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (profile / "targets.yaml").write_text(
+        "market:\n  countries: ['United States', '', CA]\n", encoding="utf-8"
+    )
+    assert config.load(tmp_path).market_countries == ["United States", "CA"]
+    (profile / "targets.yaml").write_text("keywords: []\n", encoding="utf-8")
+    assert config.load(tmp_path).market_countries == []
+
+
 # ----------------------------------------------------------------------- live
 
 
@@ -846,3 +989,14 @@ def test_resync_keeps_a_description_fetched_on_demand(store):
 
 def test_html_to_text_decodes_hex_entities():
     assert html_to_text("a&#xa0;b&#x2014;c") == "a b—c"
+
+
+@pytest.mark.live
+async def test_himalayas_search_endpoint_still_filters_by_query():
+    from jobhunt.sources.base import make_client
+    from jobhunt.sources.himalayas import search
+
+    async with make_client() as client:
+        result = await search(client, "kubernetes", max_results=10)
+    assert not result.errors
+    assert result.jobs, "a common term should always have remote matches"

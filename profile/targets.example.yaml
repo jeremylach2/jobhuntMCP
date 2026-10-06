@@ -45,6 +45,14 @@ preferences:
   company_stage: ""      # e.g. "seed to Series C", "public only"
   notes: ""              # anything else that matters: visa sponsorship, team size, etc.
 
+# search_market (whole-market search beyond the companies below) only keeps
+# Himalayas postings that hire from one of these countries. Names or ISO
+# codes, e.g. "United States" or "US". Empty means any country. This one IS a
+# hard filter: whether a posting will hire from your country is eligibility,
+# not fit. HN and RemoteOK locations are free text, so they're not filtered.
+market:
+  countries: []
+
 companies:
   # ---------------------------------------------------------------- greenhouse
   greenhouse:

@@ -19,7 +19,7 @@ from .db import STATUSES, Store
 from .scoring import triage
 from .sources import discover
 from .sources.base import make_client
-from .sync import run_sync
+from .sync import MARKET_SOURCES, market_rows, run_market_search, run_sync
 
 
 def _line(row) -> str:
@@ -72,6 +72,27 @@ def cmd_search(args, cfg, store) -> int:
         print(_line(row))
     print(f"\n{len(rows)} posting(s)", file=sys.stderr)
     return 0
+
+
+def cmd_market(args, cfg, store) -> int:
+    sources = [s.strip() for s in args.sources.split(",") if s.strip()]
+    if args.countries is None:
+        countries = cfg.market_countries
+    else:
+        countries = [c.strip() for c in args.countries.split(",") if c.strip()]
+    result = asyncio.run(run_market_search(store, args.query, sources, countries=countries))
+    for key, err in result.errors.items():
+        print(f"error {key}: {err}", file=sys.stderr)
+    roles = market_rows(store, result.job_ids)
+    for row, extra in roles[: args.limit]:
+        print(_line(row) + (f" [+{extra} more location(s)]" if extra else ""))
+    counts = ", ".join(f"{k}: {v}" for k, v in result.per_source.items())
+    print(
+        f"\n{len(result.job_ids)} posting(s), {len(roles)} distinct role(s) ({counts}), "
+        f"{result.new} new",
+        file=sys.stderr,
+    )
+    return 0 if result.job_ids else 1
 
 
 def cmd_show(args, cfg, store) -> int:
@@ -192,6 +213,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="only postings the employer posted in the last DAYS days")
     p.add_argument("--limit", type=int, default=40)
     p.set_defaults(func=cmd_search)
+
+    p = sub.add_parser("market", help="search the whole market live, beyond watched companies")
+    p.add_argument("query")
+    p.add_argument("--sources", default=",".join(MARKET_SOURCES),
+                   help="comma-separated: " + ", ".join(MARKET_SOURCES))
+    p.add_argument("--countries", default=None,
+                   help="comma-separated names or ISO codes himalayas results must hire "
+                        "from (default: market.countries in targets.yaml; '' for any)")
+    p.add_argument("--limit", type=int, default=40)
+    p.set_defaults(func=cmd_market)
 
     p = sub.add_parser("show", help="print one posting in full")
     p.add_argument("job_id")

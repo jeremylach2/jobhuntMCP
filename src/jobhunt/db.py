@@ -269,6 +269,7 @@ class Store:
         posted_since: str = "",
         include_inactive: bool = False,
         exclude_applied: bool = False,
+        ids: Iterable[str] | None = None,
         limit: int = 50,
         description_limit: int | None = None,
     ) -> list[sqlite3.Row]:
@@ -281,6 +282,10 @@ class Store:
         capped. A bulk caller that only needs metadata (a one-line summary,
         a triage prefix) should pass this rather than fetching every
         posting's full text just to discard it.
+
+        ``ids`` restricts to those posting ids (an empty iterable matches
+        nothing), for callers that already know which rows they want but
+        still need them in bulk with the same description cap.
 
         ``new_since`` filters on when this tool first saw a posting;
         ``posted_since`` on when the employer says it was posted. Both take an
@@ -301,6 +306,10 @@ class Store:
         ]
         if not include_inactive:
             sql.append("AND j.active = 1")
+        if ids is not None:
+            id_list = list(ids)
+            sql.append(f"AND j.id IN ({', '.join('?' * len(id_list)) or 'NULL'})")
+            args += id_list
         if query:
             sql.append("AND (j.title LIKE ? OR j.description LIKE ? OR j.department LIKE ?)")
             args += [f"%{query}%"] * 3

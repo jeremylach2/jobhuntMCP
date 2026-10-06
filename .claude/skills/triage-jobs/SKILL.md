@@ -1,6 +1,6 @@
 ---
 name: triage-jobs
-description: Sync job boards and produce a ranked shortlist of top-fit postings. Use when asked to sync jobs, find/shortlist top jobs, triage new postings, or "what's new that's worth looking at."
+description: Sync job boards and produce a ranked shortlist of top-fit postings. Use when asked to sync jobs, find/shortlist top jobs, triage new postings, "what's new that's worth looking at," or to search all jobs / the whole market for a role or topic beyond the watched companies.
 ---
 
 # Triage jobs
@@ -13,14 +13,61 @@ red flag) aren't visible from the tool names alone.
 
 ## 1. Sync
 
-`mcp__jobhunt__sync_boards` with default sources (greenhouse, ashby, lever) --
-the target-company boards. Only add `himalayas`/`hn`/`remoteok` (the wider,
-keyword-scoped market) if the user asks for broader coverage than the target
-list, since those pull in a much larger and noisier set of postings.
+`mcp__jobhunt__sync_boards` with default sources (greenhouse, ashby, lever,
+smartrecruiters) -- the target-company boards. Only add
+`himalayas`/`hn`/`remoteok` (the wider, keyword-scoped market) if the user
+asks for broader coverage than the target list, since those pull in a much
+larger and noisier set of postings.
 
 This can take a couple of minutes for ~90 boards and may run as a background
 task. Wait for it to finish before shortlisting -- scoring against a stale or
 half-synced DB defeats the point.
+
+### Searching all jobs (beyond the target list)
+
+If the user asks to search "all jobs", "the whole market", or for a specific
+role/topic ("anything in Rust", "data engineer roles anywhere"), use
+`mcp__jobhunt__search_market(query=...)` instead of, or alongside, the sync.
+`search_jobs` and `shortlist_for_review` only see what's already stored:
+the watched companies, plus aggregator postings that matched the *profile*
+keywords. `search_market` asks the aggregators live for the user's query, so
+it finds roles at companies that aren't on the target list.
+
+- Sources: `himalayas` (whole remote catalog, searched server-side), `hn`
+  (this month's Who-is-hiring thread, full-text searched), `remoteok`
+  (only its ~100 newest postings). Default is all three.
+- Use a short query: one role or technology ("platform engineer",
+  "kubernetes"). For several topics, make several calls instead of one long
+  query. `hn` and `remoteok` match the query as plain text, so a long query
+  matches almost nothing.
+- Results are saved, so the returned ids work with `get_job` /
+  `record_fit` / `set_status` right away, and `search_jobs(query=...)`
+  finds them again later. Saved results are never marked closed, so a
+  posting from an old search can stay in the database after the job
+  itself is gone.
+- **Triage the returned ids directly** (step 4 onward), not through
+  `shortlist_for_review`. The shortlist ranks by the profile keywords, so
+  it can bury exactly the off-profile postings the user asked for. Read
+  the most promising-looking lines with `get_job` before scoring. Results
+  come back in source order, not ranked. A `[+N more location(s), same
+  role]` tag means the same company+title was also posted for other
+  countries. Only one id is shown; `search_jobs(company=...)` lists the
+  rest if the shown location doesn't suit the user.
+- Leave `countries` on `"auto"`. It reads `market.countries` from
+  targets.yaml, so Himalayas only returns postings that hire from the
+  user's country (worldwide-open ones included). Pass `"any"` only if the
+  user asks for roles elsewhere. An `Errors: himalayas[X] (HTTP 400)` line
+  means Himalayas didn't recognize country X: retry with the full English
+  name or ISO code.
+- The country filter covers Himalayas only. HN and RemoteOK locations are
+  free text, so check those against the profile when you read each posting.
+  Most results are remote (Himalayas and RemoteOK are remote-only), but HN
+  postings vary.
+- HN titles/companies come from free-form first lines and are often messy
+  (e.g. the company's URL as the title). Judge from the full text, not the
+  one-line summary.
+- Never LinkedIn/Indeed/Glassdoor, even if "all jobs" seems to imply them.
+  Those stay manual by design. Say so if the user expects them.
 
 ## 2. Read the profile once
 

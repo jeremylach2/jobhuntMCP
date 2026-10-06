@@ -32,7 +32,7 @@ from .models import Job
 from .scoring import triage
 from .sources import ATS, discover, smartrecruiters
 from .sources.base import make_client
-from .sync import run_sync
+from .sync import market_rows, run_market_search, run_sync
 
 mcp = MCPServer(
     "jobhunt",
@@ -107,6 +107,20 @@ def _resolve_remote_only(remote_only: str) -> bool:
     return str(_cfg.preferences.get("remote", "")).strip().lower() == "required"
 
 
+def _resolve_countries(countries: str) -> list[str]:
+    """Resolve search_market's "auto"/"any"/explicit-list param.
+
+    Same reasoning as `_resolve_remote_only`: a default that reads the profile
+    means a caller can't forget the user's country and get flooded with roles
+    they can't take.
+    """
+    if countries.strip().lower() == "auto":
+        return _cfg.market_countries
+    if countries.strip().lower() in ("any", ""):
+        return []
+    return [c.strip() for c in countries.split(",") if c.strip()]
+
+
 # --------------------------------------------------------------------- syncing
 
 
@@ -161,7 +175,8 @@ def search_jobs(
 
     Use this to browse and narrow down. Use get_job to actually read one.
     For "what's new since the last sync", pass new_within_days=1 (or however
-    many days since the user last synced).
+    many days since the user last synced). This only covers postings already
+    synced. To look beyond the watched companies, use search_market.
 
     Args:
         query: Free text matched against title, description, and department.
@@ -199,6 +214,77 @@ def search_jobs(
         return "No matching postings. Try a broader query, or run sync_boards first."
     lines = [_fmt_job_line(r) for r in rows]
     return f"{len(rows)} posting(s):\n" + "\n".join(lines)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    )
+)
+async def search_market(
+    query: str,
+    sources: str = "himalayas,hn,remoteok",
+    countries: str = "auto",
+    limit: int = 40,
+) -> str:
+    """Search the whole job market live for a query, not just the watched companies.
+
+    Use this when the user wants to look beyond their target list ("search all
+    jobs for X", "what else is out there"). search_jobs only covers postings
+    already synced, which are the watched companies' boards plus aggregator
+    postings that matched the profile keywords. This tool instead asks the
+    aggregators directly for `query`, so it finds roles at any company and on
+    any topic. Takes a few seconds.
+
+    Results are saved, so get_job, record_fit, and set_status work on the
+    returned ids, and later search_jobs calls will find them too. Returns one
+    line per posting. Read one with get_job.
+
+    Args:
+        query: What to look for, e.g. "data engineer" or "rust". Short phrases
+            work best. remoteok and hn match it as a plain substring.
+        sources: Comma-separated, any of: himalayas (remote roles, searches
+            its whole catalog), hn (this month's Who-is-hiring thread),
+            remoteok (its ~100 newest remote postings).
+        countries: Only keep himalayas postings that hire from these
+            countries (worldwide-open ones included). "auto" (default) uses
+            market.countries from profile/targets.yaml; "any" turns the
+            filter off; otherwise comma-separated names or ISO codes, e.g.
+            "United States" or "US,CA". hn and remoteok aren't filtered:
+            check their locations when you read them.
+        limit: Max lines to return (default 40). Every match is saved
+            regardless.
+    """
+    if not query.strip():
+        return "Pass a query, e.g. search_market(query='data engineer')."
+    wanted = [s.strip() for s in sources.split(",") if s.strip()]
+    result = await run_market_search(
+        store(), query.strip(), wanted, countries=_resolve_countries(countries)
+    )
+
+    roles = market_rows(store(), result.job_ids)
+    head = (
+        f"{len(result.job_ids)} posting(s), {len(roles)} distinct role(s), for {query!r} "
+        f"({', '.join(f'{k}: {v}' for k, v in result.per_source.items()) or 'no sources ran'}; "
+        f"{result.new} new to local storage)."
+    )
+    lines = [head]
+    if result.errors:
+        lines.append("Errors: " + ", ".join(f"{k} ({v})" for k, v in result.errors.items()))
+    for row, extra in roles[:limit]:
+        line = _fmt_job_line(row)
+        if extra:
+            line += f" [+{extra} more location(s), same role]"
+        lines.append(line)
+    if len(roles) > limit:
+        lines.append(
+            f"...{len(roles) - limit} more role(s) saved. "
+            f"Narrow with search_jobs(query={query!r})."
+        )
+    return "\n".join(lines)
 
 
 async def _description(row: Any) -> str:
